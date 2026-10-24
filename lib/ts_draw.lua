@@ -1,5 +1,5 @@
 -- Drawing: pen events become strokes on the selected sequence. The upper pen button clears it
--- (a second press within 1 s confirms); the lower undoes the last stroke. Both buttons are
+-- (a second press within 1 s, on the same sequence, confirms); the lower undoes the last stroke. Both buttons are
 -- ignored while the tip is down. No norns globals; the caller passes everything.
 local Draw = {}
 
@@ -16,7 +16,7 @@ function Draw.new(opts)
   local on_new = opts.on_new or function() end
   local cap = nil        -- the stroke in progress
   local hover = nil      -- {x, y} while the pen is in range and up
-  local clear_at = nil   -- time of the first clear press
+  local clear_at = nil   -- { seq, at }: the first clear press, with the sequence it was made on
   local self = {}
 
   local function selected_seq()
@@ -58,12 +58,13 @@ function Draw.new(opts)
       local seq = selected_seq()
       if not seq then return end
       local t = now()
-      if clear_at and t - clear_at <= CLEAR_WINDOW then
+      -- the second press counts only on the sequence the first was made on (E1 may have moved on)
+      if clear_at and clear_at.seq == seq and t - clear_at.at <= CLEAR_WINDOW then
         clear_at = nil
         seq.strokes = {}
         on_change(seq)
       else
-        clear_at = t
+        clear_at = { seq = seq, at = t }
       end
     elseif evt == "octaveDown" then
       if cap then return end
@@ -75,9 +76,9 @@ function Draw.new(opts)
     end
   end
 
-  -- True while a first clear press waits for its second.
+  -- True while a first clear press waits for its second, and its sequence is still the selected one.
   function self.pending_clear()
-    return clear_at ~= nil and now() - clear_at <= CLEAR_WINDOW
+    return clear_at ~= nil and clear_at.seq == selected_seq() and now() - clear_at.at <= CLEAR_WINDOW
   end
 
   function self.hover() return hover end

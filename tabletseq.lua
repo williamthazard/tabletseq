@@ -61,6 +61,8 @@ local prior_tempo_handler
 local last_tempo
 local poll_at = 0
 local params_api
+local strip_shown = false     -- was a confirm showing in the bottom strip at the last tick
+local CLEAR_TEXT = "pen button again to clear"
 
 local function now() return util.time() end
 
@@ -109,14 +111,6 @@ local function connect_tablet(gone)
   dirty = true
 end
 
--- norns' crow.ii.<module> returns a one-off table that every index appends to, so a cached
--- module accumulates the names of earlier calls. Resolve it afresh on every call.
-local function ii_module(name)
-  return setmetatable({}, { __index = function(_, fn)
-    return function(...) return crow.ii[name][fn](...) end
-  end })
-end
-
 -- A module voice that remembers its first use, so its settings are sent only once it has played.
 local function tracked(name, voice)
   return setmetatable({ first_use = function()
@@ -143,7 +137,7 @@ function init()
 
   local engine_voice = EngineVoice.new(engine, clock)
   drums = Drums.new{ engine_voice = engine_voice, scandir = util.scandir, file_info = util.file_exists }
-  local jf_settings = { mode = 2 }
+  local jf_settings = {} -- filled by params:bang()
   local wsyn_settings = { voices = 4, lpg_time = 0, lpg_symmetry = 0, hold = true }
   jf_voice = Ii.Jf.new{ ii = function() return crow.ii.jf end, connected = crow_here, clock = clock,
     settings = jf_settings }
@@ -270,8 +264,13 @@ function init()
     for _, s in ipairs(cur.sequences) do
       if seq.state(s) ~= "stopped" then busy = true end
     end
+    -- a confirm waiting in the bottom strip keeps the screen drawn; one tick after it lapses redraws
+    -- once more so its text goes
+    local strip = ui.message() ~= nil or draw.pending_clear()
+    if strip ~= strip_shown then dirty = true end
+    strip_shown = strip
     gridui.redraw((now() * 2) % 1)
-    if dirty or busy or ui.message() then
+    if dirty or busy or strip then
       dirty = false
       redraw()
     end
@@ -301,7 +300,9 @@ function redraw()
     tip = cap and { x = cap.last_x, y = cap.last_y } or nil,
     blink = math.floor(now() * 4) % 2 == 0,
   }
-  -- the strip at the bottom: a delete waiting, then a notice; "plug in the tablet" only on the blank page
+  -- the strip at the bottom: a delete waiting, a clear waiting, then a notice; "plug in the tablet"
+  -- only on the blank page
+  if not view.message and draw.pending_clear() then view.message = CLEAR_TEXT end
   if not view.message then
     view.message = notice and notice.text or (not view.seq and status) or nil
   end
