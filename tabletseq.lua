@@ -43,6 +43,7 @@ local Store = include 'lib/ts_store'
 local Params = include 'lib/ts_params'
 
 local FPS = 30
+local TEMPO_POLL = 0.25            -- seconds between tempo checks
 local NOTICE = 3                  -- seconds a message stays on screen
 
 local cur                          -- the live set: { selected, sequences }
@@ -56,6 +57,9 @@ local status                       -- shown on screen when something is wrong
 local notice                       -- { text, until }
 local dirty = true
 local prior_crow_add, prior_hid_add, prior_hid_remove
+local prior_tempo_handler
+local last_tempo
+local poll_at = 0
 local params_api
 
 local function now() return util.time() end
@@ -223,6 +227,18 @@ function init()
     drums = drums, tablet = tablet, notify = say,
   })
 
+  -- The delay follows the clock: a tempo edit in PARAMETERS calls the handler, and the redraw metro's
+  -- poll catches the rest (Link, MIDI and crow clocks change the tempo without calling it).
+  local function resync_delay()
+    last_tempo = clock.get_tempo()
+    params_api.resync_delay()
+  end
+  prior_tempo_handler = clock.tempo_change_handler
+  clock.tempo_change_handler = function(...)
+    if prior_tempo_handler then prior_tempo_handler(...) end
+    resync_delay()
+  end
+
   -- The sequences live beside the PSET.
   params.action_write = function(filename)
     store.save(store.path_for(filename), cur)
@@ -246,6 +262,10 @@ function init()
   redraw_metro.time = 1 / FPS
   redraw_metro.event = function()
     if notice and now() >= notice["until"] then notice = nil; dirty = true end
+    if now() >= poll_at then
+      poll_at = now() + TEMPO_POLL
+      if last_tempo and math.abs(clock.get_tempo() - last_tempo) > 0.01 then resync_delay() end
+    end
     local busy = false
     for _, s in ipairs(cur.sequences) do
       if seq.state(s) ~= "stopped" then busy = true end
@@ -259,6 +279,7 @@ function init()
   redraw_metro:start()
 
   params:bang()
+  last_tempo = clock.get_tempo()
   ui.sync_engine()
 end
 
@@ -295,5 +316,6 @@ function cleanup()
   if active_port then hid.vports[active_port].event = nil end
   if g then g.key = nil end
   norns.crow.add = prior_crow_add
+  clock.tempo_change_handler = prior_tempo_handler
   hid.add, hid.remove = prior_hid_add, prior_hid_remove
 end

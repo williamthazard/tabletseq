@@ -1,10 +1,18 @@
-// tabletseq's engine: the sine and the drum rack's one-shots, each sequence on its own group.
-// The only SuperCollider class in the script; the SynthDefs live in ts_sine.scd and ts_oneshot.scd.
+// tabletseq's engine: the sine and the drum rack's one-shots, each sequence on its own group, and the
+// effects they send to (reverb, delay and Carter's delay, ported from just draw for norns).
+// The only SuperCollider class in the script; the SynthDefs live in ts_sine.scd, ts_oneshot.scd,
+// ts_fx.scd and ts_grains.scd.
 // Every note starts in its sequence's group (1-16), so level and sends act live on the sounding notes.
 Engine_TabletSeq : CroneEngine {
 	var master, groups, levels, sends, buffers, decodeEnv;
-	var reverbBus, delayBus, grainsBus;
-	classvar seqCount = 16, slotCount = 16, sendNames;
+	var reverbBus, delayBus, grainsBus, fxGroup, delay, reverb;
+	// Carter's delay (ts_grains.scd): nothing is allocated until grains_on 1. grainSet holds every
+	// setting, so values sent while the chain is off (or still allocating) apply when it comes up.
+	var grainsOn = false, grainsLive = false, grainsGen = 0;
+	var grainSet, grainRates;
+	var grainGroups, grainBuf, grainEnvBufs, grainPtrBus, grainPtr, grainRec, grainFb, grainSynths;
+	var grainDurs, grainDelays;
+	classvar seqCount = 16, slotCount = 16, sendNames, grainCount = 4, grainBeatSec = 0.5;
 
 	*new { arg context, doneCallback;
 		^super.new(context, doneCallback);
@@ -18,12 +26,16 @@ Engine_TabletSeq : CroneEngine {
 		var dir = PathName(this.class.filenameSymbol.asString).pathOnly;
 		var sine = thisProcess.interpreter.executeFile(dir +/+ "ts_sine.scd");
 		var oneshot = thisProcess.interpreter.executeFile(dir +/+ "ts_oneshot.scd");
+		var fxDefs = thisProcess.interpreter.executeFile(dir +/+ "ts_fx.scd");
+		var grainDefs = thisProcess.interpreter.executeFile(dir +/+ "ts_grains.scd");
 		sine[\def].add;
 		oneshot.add;
+		fxDefs.do { |def| def.add };
+		grainDefs.do { |def| def.add };
 		decodeEnv = sine[\decodeEnv];
 		Server.default.sync;
 
-		// The effects' buses; the sends write to them and nothing reads them until the effects exist.
+		// The effects' buses; the sends write to them.
 		reverbBus = Bus.audio(context.server, 2);
 		delayBus = Bus.audio(context.server, 2);
 		grainsBus = Bus.audio(context.server, 1);
@@ -32,6 +44,12 @@ Engine_TabletSeq : CroneEngine {
 		levels = Array.fill(seqCount, 0.8);
 		sends = Array.fill(seqCount, { [0, 0, 0] });
 		buffers = Array.newClear(slotCount);
+		this.initGrains;
+		// The effects run after the sequence groups. Each new synth goes to the head of fxGroup, so adding
+		// reverb, then delay, runs them delay, reverb: the delay's writes reach the reverb bus before it is read.
+		fxGroup = Group.after(master);
+		reverb = Synth.new(\ts_reverb, [\in, reverbBus, \out, context.out_b], fxGroup);
+		delay = Synth.new(\ts_delay, [\in, delayBus, \out, context.out_b, \reverbOut, reverbBus], fxGroup);
 
 		this.addCommand(\sine_note, "iffs", { arg msg;
 			var group = this.groupFor(msg[1]);
@@ -71,6 +89,182 @@ Engine_TabletSeq : CroneEngine {
 			if(group.notNil) { group.set(\gate, 0) };
 		});
 		this.addCommand(\release_all, "", { arg msg; groups.do { |group| group.set(\gate, 0) } });
+
+		// Effects: each command sets one control on the synth that owns it.
+		[
+			[\set_delay_time, { delay }, \delayTime], [\set_delay_decay, { delay }, \decayTime],
+			[\set_delay_level, { delay }, \amp], [\set_delay_to_reverb, { delay }, \to_reverb],
+			[\set_delay_to_dry, { delay }, \to_dry], [\set_reverb_room, { reverb }, \room],
+			[\set_reverb_damp, { reverb }, \damp], [\set_reverb_level, { reverb }, \amp]
+		].do { |row|
+			this.addCommand(row[0], "f", { arg msg; row[1].value.set(row[2], msg[1]) });
+		};
+
+		// Carter's delay.
+		this.addCommand(\grains_on, "i", { arg msg;
+			if(msg[1] > 0) { this.allocGrains } { this.freeGrains };
+		});
+		[
+			[\set_grains_level, \level], [\set_grains_freeze, \freeze], [\set_grains_rec_pre, \recPre],
+			[\set_grains_window, \window], [\set_grains_sync, \sync],
+			[\set_grains_cutoff_ceiling, \ceiling], [\set_grains_rate_mult, \rateMult],
+			[\set_grains_octaves, \octaves], [\set_grains_fifths, \fifths],
+			[\set_grains_suboctaves, \suboctaves], [\set_grains_reverse, \reverse],
+			[\set_grains_delay_scale, \delayScale], [\set_grains_fb_amp, \fbAmp],
+			[\set_grains_fb_balance, \fbBalance], [\set_grains_fb_hpf, \fbHpf],
+			[\set_grains_fb_noise, \fbNoise], [\set_grains_fb_sine_level, \fbSineLevel],
+			[\set_grains_fb_sine_hz, \fbSineHz]
+		].do { |row|
+			this.addCommand(row[0], "f", { arg msg; this.setGrain(row[1], msg[1]) });
+		};
+		[[\set_grains_pan_rate, \panRate], [\set_grains_cutoff_rate, \cutoffRate],
+			[\set_grains_res_rate, \resRate]].do { |row|
+			this.addCommand(row[0], "if", { arg msg; this.setGrainRate(row[1], msg[1].asInteger, msg[2]) });
+		};
+	}
+
+	// ---- Carter's delay: ported from schicksalslied 2's Lied.sc (ensureGranularChain and friends) ----
+
+	initGrains {
+		grainSet = Dictionary.newFrom([
+			\level, 0.3, \freeze, 0, \recPre, 0, \window, 0, \sync, 1, \ceiling, 16000, \rateMult, 1,
+			\octaves, 0, \fifths, 0, \suboctaves, 0, \reverse, 0, \delayScale, 1,
+			\fbAmp, 0, \fbBalance, 0, \fbHpf, 12, \fbNoise, 0, \fbSineLevel, 0, \fbSineHz, 55
+		]);
+		grainRates = (panRate: Array.fill(grainCount, { rrand(1, 64) }),
+			cutoffRate: Array.fill(grainCount, { rrand(1, 64) }), resRate: Array.fill(grainCount, { rrand(1, 64) }));
+	}
+
+	// Playback rates of the grains, from the octave, fifth, sub-octave and reverse switches.
+	grainTapRates {
+		var oct = grainSet[\octaves] > 0, fif = grainSet[\fifths] > 0, sub = grainSet[\suboctaves] > 0;
+		var base = case
+			{ oct and: fif and: sub } { [1/2, 1, 3/2, 2] }
+			{ oct and: fif } { [1, 2, 3/2, 4/3] }
+			{ oct and: sub } { [1/4, 1/2, 1, 2] }
+			{ fif and: sub } { [1/2, 1, 3/2, 4/3] }
+			{ oct } { [1, 2, 1, 2] }
+			{ fif } { [1, 3/2, 4/3, 9/8] }
+			{ sub } { [1, 1/2, 1/4, 1/2] }
+			{ true } { [1/4, 1/2, 1, 3/2] };
+		^grainCount.collect { |i|
+			var rate = base[i % base.size];
+			(if(grainSet[\reverse] > 0 and: { i.odd }) { rate.neg } { rate }) * grainSet[\rateMult].max(0.01)
+		};
+	}
+
+	grainEnvNum {
+		^if(grainSet[\window] == 0) { -1 } { grainEnvBufs[grainSet[\window].asInteger - 1].bufnum }
+	}
+
+	// Sends one stored setting to the live chain.
+	pushGrain { arg key;
+		var value = grainSet[key];
+		case
+			{ key == \level } { grainSynths.do { |g| g.set(\amp, value) } }
+			{ key == \sync } { grainSynths.do { |g| g.set(\sync, value) } }
+			{ key == \ceiling } { grainSynths.do { |g| g.set(\cutoffMax, value) } }
+			{ key == \window } { grainSynths.do { |g| g.set(\grainEnv, this.grainEnvNum) } }
+			{ key == \recPre } { grainRec.set(\preLevel, value) }
+			{ key == \freeze } {
+				grainPtr.set(\rate, if(value > 0) { 0 } { 1 });
+				grainRec.run(value <= 0);
+			}
+			{ [\rateMult, \octaves, \fifths, \suboctaves, \reverse].includes(key) } {
+				this.grainTapRates.do { |rate, i|
+					grainSynths[i].set(\rate, rate, \dens, 1 / (grainDurs[i] * rate.abs));
+				};
+			}
+			{ key == \fbAmp } { grainFb.set(\amp, value) }
+			{ key == \fbBalance } { grainFb.set(\balance, value) }
+			{ key == \fbHpf } { grainFb.set(\hpFreq, value) }
+			{ key == \fbNoise } { grainFb.set(\noiseLevel, value) }
+			{ key == \fbSineLevel } { grainFb.set(\sineLevel, value) }
+			{ key == \fbSineHz } { grainFb.set(\sineHz, value) };
+	}
+
+	// Stores a setting and, once the chain is up, sends it.
+	setGrain { arg key, value;
+		grainSet[key] = value;
+		if(grainsLive) { this.pushGrain(key) };
+	}
+
+	setGrainRate { arg key, index, rate;
+		if(index < grainCount) {
+			grainRates[key][index] = rate;
+			if(grainsLive) { grainSynths[index].set(key, rate) };
+		};
+	}
+
+	allocGrains {
+		var gen;
+		if(grainsOn) { ^this };
+		grainsOn = true;
+		gen = grainsGen = grainsGen + 1;
+		fork {
+			var server = context.server;
+			var delayScale = grainSet[\delayScale];
+			var rates;
+			grainBuf = Buffer.alloc(server, server.sampleRate * (grainBeatSec * 512), 1);
+			grainEnvBufs = [
+				Buffer.sendCollection(server, Env.perc(0.01, 0.99, 1, -4).asSignal(512)),
+				Buffer.sendCollection(server, Env.new([0, 1, 0], [0.7, 0.3], [3, -3]).asSignal(512)),
+				Buffer.sendCollection(server, Env.new([0, 1, 0], [0.98, 0.02], [4, -4]).asSignal(512))
+			];
+			grainPtrBus = Bus.audio(server, 1);
+			server.sync;
+			// Freed while allocating: only the buffers and bus exist, so free them and stop.
+			if(gen != grainsGen) {
+				grainBuf.free; grainEnvBufs.do(_.free); grainPtrBus.free;
+			} {
+				// ptr, rec and grains run after fxGroup, after every note has written grainsBus.
+				grainGroups = Array.newClear(3);
+				grainGroups[0] = Group.after(fxGroup);
+				grainGroups[1] = Group.after(grainGroups[0]);
+				grainGroups[2] = Group.after(grainGroups[1]);
+				grainPtr = Synth(\ts_ptr, [\buf, grainBuf, \out, grainPtrBus,
+					\rate, if(grainSet[\freeze] > 0) { 0 } { 1 }], grainGroups[0]);
+				grainFb = Synth(\ts_fbmix, [\in, context.out_b, \out, grainsBus, \amp, grainSet[\fbAmp],
+					\balance, grainSet[\fbBalance], \hpFreq, grainSet[\fbHpf], \noiseLevel, grainSet[\fbNoise],
+					\sineLevel, grainSet[\fbSineLevel], \sineHz, grainSet[\fbSineHz]], grainGroups[0]);
+				grainRec = Synth(\ts_rec, [\ptrIn, grainPtrBus, \micIn, grainsBus, \buf, grainBuf,
+					\preLevel, grainSet[\recPre]], grainGroups[1]);
+				if(grainSet[\freeze] > 0) { grainRec.run(false) };
+				rates = this.grainTapRates;
+				grainDurs = grainCount.collect({ |i| grainBeatSec * (i + 1) }).scramble;
+				grainDelays = grainCount.collect({ |i|
+					server.sampleRate * (grainBeatSec * (i + 1)) * 16 * delayScale
+				}).scramble;
+				grainSynths = grainCount.collect { |n|
+					Synth(\ts_gran, [
+						\amp, grainSet[\level], \buf, grainBuf, \out, context.out_b, \atk, 1, \rel, 1, \gate, 1,
+						\sync, grainSet[\sync], \dens, 1 / (grainDurs[n] * rates[n].abs),
+						\baseDur, grainDurs[n], \durRand, 1, \rate, rates[n], \rateRand, 1,
+						\grainEnv, this.grainEnvNum, \ptrBus, grainPtrBus, \ptrSampleDelay, grainDelays[n],
+						\ptrRandSamples, server.sampleRate * (grainBeatSec * (n + 1)) * 2,
+						\minPtrDelay, grainDelays[n], \cutoffMax, grainSet[\ceiling], \beatSec, grainBeatSec,
+						\panRate, grainRates[\panRate][n], \cutoffRate, grainRates[\cutoffRate][n],
+						\resRate, grainRates[\resRate][n]
+					], grainGroups[2]);
+				};
+				grainsLive = true;
+			};
+		};
+	}
+
+	freeGrains {
+		if(grainsOn.not) { ^this };
+		grainsOn = false;
+		grainsGen = grainsGen + 1;
+		if(grainsLive) {
+			grainsLive = false;
+			grainGroups.do(_.free);
+			grainEnvBufs.do(_.free);
+			grainBuf.free;
+			grainPtrBus.free;
+			grainGroups = grainSynths = grainPtr = grainRec = grainFb = nil;
+			grainBuf = grainEnvBufs = grainPtrBus = nil;
+		};
 	}
 
 	// The group of sequence i (1-16), or nil.
@@ -121,6 +315,10 @@ Engine_TabletSeq : CroneEngine {
 	}
 
 	free {
+		this.freeGrains;
+		delay.free;
+		reverb.free;
+		fxGroup.free;
 		master.free;
 		buffers.do { |buf| if(buf.notNil) { buf.free } };
 		reverbBus.free;
