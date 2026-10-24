@@ -57,6 +57,12 @@ function Router.new(opts)
     if i and TARGET[seq.voice] == "engine" then voices.engine.set_level(i, level) end
   end
 
+  -- Likewise the sends (which: "reverb", "delay" or "grains").
+  function r.set_send(seq, which, value)
+    local i = index_of(seq)
+    if i and TARGET[seq.voice] == "engine" then voices.engine.set_send(i, which, value) end
+  end
+
   return r
 end
 
