@@ -5,14 +5,26 @@ local Common = {}
 
 Common.EPS = 1e-9
 
+-- The longest stretch of beats one clock.sleep covers (see sleep_until).
+Common.CHUNK = 0.25
+
+-- Waits until the clock reaches the absolute `beat`. norns's clock.sleep takes SECONDS, so a single
+-- long sleep would keep its wall-clock time through a tempo change (an edit, a Link peer, an external
+-- clock) and wake at the wrong beat. The wait is therefore taken in short stretches, each worked out
+-- from the clock's beat and tempo as they are then.
+function Common.sleep_until(clock, beat)
+  while true do
+    local rest = beat - clock.get_beats()
+    if rest <= Common.EPS then return end
+    clock.sleep(math.min(rest, Common.CHUNK) * clock.get_beat_sec())
+  end
+end
+
 -- Scheduling on `clock` (run, sleep, cancel, get_beats, get_beat_sec); jobs are tracked per sequence.
 function Common.scheduler(clock)
   local s = { waiting = {} }
 
-  function s.sleep_until(beat)
-    local rest = beat - clock.get_beats()
-    if rest > Common.EPS then clock.sleep(rest * clock.get_beat_sec()) end
-  end
+  function s.sleep_until(beat) Common.sleep_until(clock, beat) end
 
   function s.spawn(i, fn)
     local job = {}

@@ -3,6 +3,7 @@
 -- or nil; it is called on every send, so a device change is picked up. `clock` is norns's clock
 -- (run, sleep, cancel, get_beats, get_beat_sec). Both are passed in. No norns globals; Lua 5.3 compatible.
 -- Channels are 1-16. A kit hit is a plan note with its fixed hit length as `dur` and no bends.
+local Common = include 'lib/ts_voice_common'
 local MidiVoice = {}
 
 local CENTRE = 8192
@@ -42,10 +43,7 @@ function MidiVoice.new(opts)
     end
   end
 
-  local function sleep_until(beat)
-    local rest = beat - clock.get_beats()
-    if rest > 1e-9 then clock.sleep(rest * clock.get_beat_sec()) end
-  end
+  local function sleep_until(beat) Common.sleep_until(clock, beat) end
 
   -- note-on at beat `at`, then the plan's bends and pressures at their beats, then the note-off.
   -- A note still sounding at this pitch ends first (its own note-off is then dropped). A note

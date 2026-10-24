@@ -1,6 +1,7 @@
 -- The engine voice: the sine and the drum rack's one-shots, played by Engine_TabletSeq.
 -- `engine` is norns's engine table (plain functions, called with a dot); `clock` is norns's clock
 -- (run, sleep, cancel, get_beats, get_beat_sec). Both are passed in. No norns globals; Lua 5.3 compatible.
+local Common = include 'lib/ts_voice_common'
 local EngineVoice = {}
 
 local STEP = 0.001 -- beats a hold curve takes to jump to its next level
@@ -47,7 +48,7 @@ function EngineVoice.new(engine, clock)
     local waiting = pending[i]
     local id
     id = clock.run(function()
-      clock.sleep((at - clock.get_beats()) * clock.get_beat_sec())
+      Common.sleep_until(clock, at)
       waiting[id] = nil
       fn()
     end)

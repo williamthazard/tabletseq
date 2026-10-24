@@ -1,6 +1,8 @@
 -- The sequencer: one routine per sequence on the norns clock. A sequence starts and stops on the
 -- bar line; each pass hands its notes to the router with their absolute beats. A change to a
--- playing sequence is planned from its next pass.
+-- playing sequence is planned from its next pass. The bar line is re-read from the clock at every
+-- sync, so a beat counter that restarts or jumps starts the pass afresh on the new bar line; the
+-- voices wait for each note's beat in short sleeps, so a tempo change moves nothing off its beat.
 local Seq = {}
 
 local EPS = 1e-9
@@ -20,11 +22,17 @@ function Seq.new(opts)
     return e.plan
   end
 
+  -- the bar line nearest the clock's beat: re-read after every sync, because the beat counter can
+  -- restart or jump (a clock reset, a MIDI Start, a Link session merge) and a counted bar would be stale
+  local function bar_now()
+    local n = bpb()
+    return math.floor(now_beats() / n + 0.5) * n
+  end
+
   local function play_routine(seq, e)
     return function()
       clock.sync(bpb())
-      local n = bpb()
-      local bar = math.floor(now_beats() / n + 0.5) * n
+      local bar = bar_now()
       e.state = "playing"
       while true do
         e.pass_start = bar
@@ -32,15 +40,25 @@ function Seq.new(opts)
         for _, note in ipairs(pass_notes(seq, e)) do
           router.play(seq, note, bar + note.start)
         end
+        local elapsed = 0 -- beats of this pass gone by, counted in whole bars
         repeat
           clock.sync(bpb())
-          bar = bar + bpb()
+          local at = bar_now()
           if e.state == "stopping" then
             entries[seq] = nil
             router.release_seq(seq)
             return
           end
-        until bar >= e.pass_start + e.pass_beats - EPS
+          if math.abs(at - (bar + bpb())) > EPS then
+            -- the beat counter jumped: what is still waiting is on the old timeline, so it goes
+            -- and the pass is handed out again from the new bar line
+            router.release_seq(seq)
+            bar = at
+            break
+          end
+          bar = at
+          elapsed = elapsed + bpb()
+        until elapsed >= e.pass_beats - EPS
       end
     end
   end
