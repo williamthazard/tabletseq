@@ -199,4 +199,159 @@ function M.sanitize_set(raw)
   return { selected = selected, sequences = seqs }
 end
 
+-- Capture (spec 5.1). A cap is a runtime table holding one stroke in progress.
+-- x is the fraction of canvas width; y is divided by 1.6 so distances are fractions of the width.
+M.MAX_ENV_POINTS = 32
+M.DOT_RADIUS = 0.01
+M.MIN_POINT_DIST = 0.001
+
+-- MIDI kits and the drum rack play hits: no dot expansion, and a zero-length line stays one hit.
+function M.plays_hits(voice)
+  return voice == "midi kit" or voice == "drum rack"
+end
+
+function M.begin_stroke(seq, bpb, x, y, p)
+  local loop_beats = M.loop_beats(seq, bpb)
+  local low, high = seq.low, seq.high
+  local cx = clip(x, 0, 1 - 1e-6)
+  local cy = clip(y, 0, 1)
+  local cp = clip(p, 0, 1)
+  local point = { cx * loop_beats, high - cy * (high - low), cp }
+  return {
+    seq = seq, loop_beats = loop_beats, low = low, high = high,
+    points = { point }, down = point, down_x = cx, down_y = cy, last_x = cx, last_y = cy,
+    max_pressure = cp, max_dist = 0,
+  }
+end
+
+function M.extend_stroke(cap, x, y, p)
+  local cx = clip(x, 0, 1 - 1e-6)
+  local cy = clip(y, 0, 1)
+  local cp = clip(p, 0, 1)
+  local from_down = math.sqrt((cx - cap.down_x) ^ 2 + ((cy - cap.down_y) / 1.6) ^ 2)
+  local from_last = math.sqrt((cx - cap.last_x) ^ 2 + ((cy - cap.last_y) / 1.6) ^ 2)
+  cap.max_pressure = math.max(cap.max_pressure, cp)
+  cap.max_dist = math.max(cap.max_dist, from_down)
+  if from_last >= M.MIN_POINT_DIST then
+    cap.points[#cap.points + 1] = { cx * cap.loop_beats, cap.high - cy * (cap.high - cap.low), cp }
+    cap.last_x, cap.last_y = cx, cy
+  end
+  return cap
+end
+
+-- A dot, or a line with strictly ascending beats; the capture itself is left unchanged.
+function M.finish_stroke(cap)
+  local points = cap.points
+  local dot = { kind = "dot", points = { { cap.down[1], cap.down[2], cap.max_pressure } } }
+  if cap.max_dist <= M.DOT_RADIUS then return dot end
+  if points[#points][1] < points[1][1] then
+    local rev = {}
+    for i = #points, 1, -1 do rev[#rev + 1] = points[i] end
+    points = rev
+  end
+  local kept = {}
+  for _, p in ipairs(points) do
+    if #kept == 0 or p[1] > kept[#kept][1] then kept[#kept + 1] = { p[1], p[2], p[3] } end
+  end
+  local span = #kept >= 2 and (kept[#kept][1] - kept[1][1]) / cap.loop_beats or 0
+  if span < 0.01 then return dot end
+  return { kind = "line", points = kept }
+end
+
+local function copy_points(points)
+  local out = {}
+  for i, p in ipairs(points) do out[i] = { p[1], p[2], p[3] } end
+  return out
+end
+
+-- Linear interpolation of {note, pressure} at a beat; clamped to the first and last point.
+function M.interp_at(points, beat)
+  local first, last = points[1], points[#points]
+  if beat <= first[1] then return { first[2], first[3] } end
+  if beat >= last[1] then return { last[2], last[3] } end
+  for i = 2, #points do
+    local b = points[i]
+    if b[1] > beat then
+      local a = points[i - 1]
+      local span = b[1] - a[1]
+      local t = span > 1e-12 and (beat - a[1]) / span or 1
+      return { a[2] + t * (b[2] - a[2]), a[3] + t * (b[3] - a[3]) }
+    end
+  end
+end
+
+-- Spec 5.1 time quantize. Works on integer steps; the result is always a new list of new points.
+function M.time_quantize(stroke, seq, bpb)
+  local points = stroke.points
+  if not seq.time_quant then return copy_points(points) end
+  local sp = seq.steps_per_beat
+  local loop_steps = M.loop_beats(seq, bpb) * sp
+  local b0 = points[1][1]
+  local span = points[#points][1] - b0
+  local q_start = round_int(b0 * sp)
+  local q_end = round_int(points[#points][1] * sp)
+  if #points == 1 then q_end = q_start end
+  if q_end <= q_start then
+    -- a hit line that rounds to zero steps stays zero: it becomes a single hit later
+    q_end = (#points > 1 and not M.plays_hits(seq.voice)) and q_start + 1 or q_start
+  end
+  local wrap = q_start >= loop_steps and loop_steps or 0
+  local out = {}
+  for i, p in ipairs(points) do
+    local frac = span > 1e-12 and (p[1] - b0) / span or 0
+    out[i] = { (q_start + frac * (q_end - q_start) - wrap) / sp, p[2], p[3] }
+  end
+  return out
+end
+
+-- Returns {} only if the first point is already past the loop end.
+function M.cut_at_loop_end(points, loop_beats)
+  if points[#points][1] <= loop_beats + 1e-9 then return copy_points(points) end
+  local kept = {}
+  for _, p in ipairs(points) do
+    if p[1] < loop_beats - 1e-9 then kept[#kept + 1] = { p[1], p[2], p[3] } end
+  end
+  if #kept == 0 then return {} end
+  local at = M.interp_at(points, loop_beats)
+  kept[#kept + 1] = { loop_beats, at[1], at[2] }
+  return kept
+end
+
+-- At most max_n points, evenly spaced in time, first and last kept exactly.
+function M.resample(points, max_n)
+  local first, last = points[1], points[#points]
+  if #points <= max_n then return copy_points(points) end
+  local span = last[1] - first[1]
+  if span < 1e-12 then
+    return { { first[1], first[2], first[3] }, { last[1], last[2], last[3] } }
+  end
+  local out = {}
+  for k = 0, max_n - 1 do
+    if k == 0 then
+      out[#out + 1] = { first[1], first[2], first[3] }
+    elseif k == max_n - 1 then
+      out[#out + 1] = { last[1], last[2], last[3] }
+    else
+      local beat = first[1] + span * k / (max_n - 1)
+      local at = M.interp_at(points, beat)
+      out[#out + 1] = { beat, at[1], at[2] }
+    end
+  end
+  return out
+end
+
+-- The per-stroke pipeline: time quantize, cut at the loop end, resample. nil for a hidden stroke
+-- or one with nothing left. A pitched dot becomes two points one grid step apart.
+function M.stroke_points(stroke, seq, bpb)
+  local loop_beats = M.loop_beats(seq, bpb)
+  local grid = 1 / seq.steps_per_beat
+  if stroke.points[1][1] >= loop_beats then return nil end
+  local points = M.cut_at_loop_end(M.time_quantize(stroke, seq, bpb), loop_beats)
+  if #points == 0 then return nil end
+  if not M.plays_hits(seq.voice) and #points == 1 then
+    points = { points[1], { points[1][1] + grid, points[1][2], points[1][3] } }
+  end
+  return M.resample(points, M.MAX_ENV_POINTS)
+end
+
 return M
