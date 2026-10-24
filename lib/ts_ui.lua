@@ -24,6 +24,8 @@ local NOTE_NAMES = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#",
 local SENDS = { { "rev", "reverb" }, { "dly", "delay" }, { "grn", "grains" } }
 local LABELS = { "voice", "bars", "low", "high", "level", "quant", "grid", "pitch", "root", "scale" }
 
+local PITCH_LINES = { pitch = true, root = true, scale = true }
+
 local function clip(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 
 local function note_name(n) return NOTE_NAMES[n % 12 + 1] .. (n // 12 - 1) end
@@ -138,11 +140,14 @@ function Ui.new(opts)
     }
   end
 
-  -- {{label, value}, ...} for the sequence's voice: the MIDI lines for MIDI voices, the sends for
-  -- the sine and drum rack
+  -- {{label, value}, ...} for the sequence's voice: no pitch lines for the kit and drum rack, the MIDI
+  -- lines for MIDI voices, the sends for the sine and drum rack
   function self.info_lines(s)
     local ids = {}
-    for _, id in ipairs(LABELS) do ids[#ids + 1] = id end
+    for _, id in ipairs(LABELS) do
+      -- hits are rows, not pitches: pitch quantize, root and scale do not apply (spec 5.3)
+      if not (PITCH_LINES[id] and model.plays_hits(s.voice)) then ids[#ids + 1] = id end
+    end
     if is_midi(s) then ids[#ids + 1] = "chan"; ids[#ids + 1] = "bend" end
     if model.uses_engine(s.voice) then
       for _, send in ipairs(SENDS) do ids[#ids + 1] = send[1] end
