@@ -501,16 +501,6 @@ function M.voice_note(points, seq)
   }
 end
 
--- Strokes whose first beat is at or past the loop end are kept but neither drawn nor played.
-function M.hidden_count(seq, bpb)
-  local loop_beats = M.loop_beats(seq, bpb)
-  local n = 0
-  for _, s in ipairs(seq.strokes) do
-    if s.points[1][1] >= loop_beats then n = n + 1 end
-  end
-  return n
-end
-
 -- The highest pressure from beat lo to beat hi, the ends interpolated.
 function M.peak_pressure(points, lo, hi)
   local top = math.max(M.interp_at(points, lo)[2], M.interp_at(points, hi)[2])
@@ -520,8 +510,8 @@ function M.peak_pressure(points, lo, hi)
   return top
 end
 
--- Hits (spec 6.3 step 4): the kit and drum rack path. points: the stroke after quantizing, cutting
--- and resampling. Returns {{kind = "hit", start, note, amp, pressure}, ...}.
+-- Hits (spec 6.3 step 4): the kit and drum rack path; the note is an integer row. points: the stroke
+-- after quantizing, cutting and resampling. Returns {{kind = "hit", start, note, amp, pressure}, ...}.
 function M.drum_notes(stroke, points, seq, bpb)
   local sp = seq.steps_per_beat
   local grid = 1 / sp
@@ -530,9 +520,10 @@ function M.drum_notes(stroke, points, seq, bpb)
   local stored = stroke.points
   local top = 0
   for _, p in ipairs(stored) do top = math.max(top, p[3]) end
-  local function snap(note)
-    if seq.pitch_quant then return M.snap_to_scale(note, seq.root, seq.scale) end
-    return note
+  -- Every integer note is a row (a pad, a sample), so pitch quantize never applies (spec 5.3): the
+  -- hit is the nearest row of the sequence's range.
+  local function row(note)
+    return clip(round_int(note), seq.low, seq.high)
   end
   -- the highest pressure within half a grid step of the hit, clipped to the stroke
   local function accent(beat)
@@ -546,7 +537,7 @@ function M.drum_notes(stroke, points, seq, bpb)
     end
   end
   if short then
-    return { { kind = "hit", start = first, note = snap(points[1][2]), amp = M.pressure_to_amp(top), pressure = top } }
+    return { { kind = "hit", start = first, note = row(points[1][2]), amp = M.pressure_to_amp(top), pressure = top } }
   end
   local beats = {}
   if seq.time_quant then
@@ -562,7 +553,7 @@ function M.drum_notes(stroke, points, seq, bpb)
     if b < loop_beats - 1e-9 then
       local pressure = accent(b)
       out[#out + 1] = {
-        kind = "hit", start = b, note = snap(M.interp_at(points, b)[1]),
+        kind = "hit", start = b, note = row(M.interp_at(points, b)[1]),
         amp = M.pressure_to_amp(pressure), pressure = pressure,
       }
     end
@@ -647,13 +638,10 @@ function M.midi_notes_for(seq, bpb)
     local points = M.stroke_points(stroke, seq, bpb)
     if points then
       if seq.voice == "midi kit" then
-        -- every integer note is a pad, so the scale never applies
-        local plain = {}
-        for k, v in pairs(seq) do plain[k] = v end
-        plain.pitch_quant = false
-        for _, hit in ipairs(M.drum_notes(stroke, points, plain, bpb)) do
+        -- every integer note is a pad, so the scale never applies (drum_notes ignores it)
+        for _, hit in ipairs(M.drum_notes(stroke, points, seq, bpb)) do
           notes[#notes + 1] = {
-            kind = "midi", start = hit.start, dur = grid, note = round_int(hit.note),
+            kind = "midi", start = hit.start, dur = grid, note = hit.note,
             vel = M.midi_velocity(hit.pressure, level), bends = {}, pressures = {},
           }
         end
