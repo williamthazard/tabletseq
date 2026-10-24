@@ -5,17 +5,18 @@
 -- (a chord, started on one beat, plays its highest note). While crow is absent nothing is sent.
 -- play(seq_index, note, at[, seq]): `at` is an absolute beat; `seq` may carry bend_range (default 24)
 -- and level (default 1). No norns globals; Lua 5.3 compatible.
+local Common = include 'lib/ts_voice_common'
 local CrowVoice = {}
 
 local THRESHOLD = 0.001 -- volts; smaller changes are not sent
-local EPS = 1e-9
+local EPS = Common.EPS
 
 function CrowVoice.new(opts)
   local crow, connected, clock = opts.crow, opts.connected, opts.clock
   local pitch_out, env_out = 2 * opts.pair - 1, 2 * opts.pair
   local v = {}
   local owner = nil   -- the entry of the note that owns the pair
-  local waiting = {}  -- sequence index -> { [job] = true } of notes not yet finished
+  local sched = Common.scheduler(clock)
   local want = {}     -- output -> the volts it should hold
   local sent = {}     -- output -> the volts last sent
 
@@ -27,10 +28,7 @@ function CrowVoice.new(opts)
     crow.output[out].volts = volts
   end
 
-  local function sleep_until(beat)
-    local rest = beat - clock.get_beats()
-    if rest > EPS then clock.sleep(rest * clock.get_beat_sec()) end
-  end
+  local sleep_until = sched.sleep_until
 
   local function end_entry(e)
     if not e.alive then return end
@@ -48,17 +46,7 @@ function CrowVoice.new(opts)
     local level = seq and seq.level or 1
     local function pitch_of(bend) return (note.note + (bend - 8192) / 8192 * range - 60) / 12 end
     local entry = { seq = i, alive = true, start = at, top = note.note }
-    local steps, first_bend = {}, nil
-    for _, b in ipairs(note.bends) do
-      if b[1] <= EPS then first_bend = b[2] else steps[#steps + 1] = { b[1], 1, b[2] } end
-    end
-    for _, p in ipairs(note.pressures) do
-      if p[1] > EPS then steps[#steps + 1] = { p[1], 2, p[2] } end
-    end
-    table.sort(steps, function(a, b)
-      if a[1] ~= b[1] then return a[1] < b[1] end
-      return a[2] < b[2]
-    end)
+    local steps, first_bend = Common.steps_of(note, true)
     -- a note started on the same beat as a higher one leaves the pair to it
     local yields = owner and owner.alive and math.abs(owner.start - at) <= EPS and owner.top > note.note
     if not yields then
@@ -79,30 +67,17 @@ function CrowVoice.new(opts)
 
   function v.play(seq_index, note, at, seq)
     if note.kind ~= "midi" then return end
-    local job = {}
-    waiting[seq_index] = waiting[seq_index] or {}
-    local jobs = waiting[seq_index]
-    job.id = clock.run(function()
-      run_note(seq_index, note, at, seq)
-      job.done = true
-      jobs[job] = nil
-    end)
-    if not job.done then jobs[job] = true end
-  end
-
-  local function cancel(i)
-    for job in pairs(waiting[i] or {}) do clock.cancel(job.id) end
-    waiting[i] = nil
+    sched.spawn(seq_index, function() run_note(seq_index, note, at, seq) end)
   end
 
   -- Cancels the sequence's unplayed notes; the envelope drops only if one of its notes owns the pair.
   function v.release_seq(i)
-    cancel(i)
+    sched.cancel(i)
     if owner and owner.seq == i then end_entry(owner) end
   end
 
   function v.release_all()
-    for i in pairs(waiting) do cancel(i) end
+    sched.cancel_all()
     if owner then end_entry(owner) end
   end
 

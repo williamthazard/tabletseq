@@ -8,6 +8,7 @@
 -- sends the neutral timbre, before a session's first note and after crow reconnects.
 -- play(seq_index, note, at[, seq]): `at` is an absolute beat; `seq` may carry bend_range (default 24)
 -- and level (default 1). While crow is absent nothing is sent. No norns globals; Lua 5.3 compatible.
+local Common = include 'lib/ts_voice_common'
 local IiVoice = {}
 
 local THRESHOLD = 0.001 -- volts; smaller changes are not sent
@@ -34,57 +35,7 @@ local function curve_at(x) return env_at({ 1, 0.5, 0, -0.5, -0.85 }, { 0.2, 0.2,
 local function ramp_at(x) return env_at({ 0.5, 0.5, 0.15, 0.04, 0.01 }, { 0.1, 0.3, 0.3, 0.3 }, x) end
 local function depth_at(x, noise) return env_at({ 0, 0, 1.5, noise }, { 0.45, 0.3, 0.25 }, x) end
 
--- The scheduling both voices share. `play_note(i, note, at, seq)` runs inside a clock routine.
-local function scheduler(clock)
-  local s = { waiting = {} }
-
-  function s.sleep_until(beat)
-    local rest = beat - clock.get_beats()
-    if rest > EPS then clock.sleep(rest * clock.get_beat_sec()) end
-  end
-
-  function s.spawn(i, fn)
-    local job = {}
-    s.waiting[i] = s.waiting[i] or {}
-    local jobs = s.waiting[i]
-    job.id = clock.run(function()
-      fn()
-      job.done = true
-      jobs[job] = nil
-    end)
-    if not job.done then jobs[job] = true end
-  end
-
-  function s.cancel(i)
-    for job in pairs(s.waiting[i] or {}) do clock.cancel(job.id) end
-    s.waiting[i] = nil
-  end
-
-  function s.cancel_all()
-    for i in pairs(s.waiting) do s.cancel(i) end
-  end
-
-  return s
-end
-
--- A note's later steps: { beat from start, 1 = pitch | 2 = pressure, value }, sorted. Steps at the
--- note's own start are left out: the note starts with its first bend and its velocity.
-local function steps_of(note, want_pressure)
-  local steps, first_bend = {}, nil
-  for _, b in ipairs(note.bends) do
-    if b[1] <= EPS then first_bend = b[2] else steps[#steps + 1] = { b[1], 1, b[2] } end
-  end
-  if want_pressure then
-    for _, p in ipairs(note.pressures) do
-      if p[1] > EPS then steps[#steps + 1] = { p[1], 2, p[2] } end
-    end
-  end
-  table.sort(steps, function(a, b)
-    if a[1] ~= b[1] then return a[1] < b[1] end
-    return a[2] < b[2]
-  end)
-  return steps, first_bend
-end
+local scheduler, steps_of = Common.scheduler, Common.steps_of
 
 -- Returns send(key, volts, fn): calls fn(volts) unless `key` last sent the same volts.
 local function changes()
@@ -102,14 +53,10 @@ function IiVoice.Jf(opts)
   local sched = scheduler(opts.clock)
   local v = {}
   local ch = 0
-  local occupant = {} -- channel -> the entry sounding on it
-
-  local function release(e)
-    if not e.alive then return end
-    e.alive = false
-    if occupant[e.chan] == e then occupant[e.chan] = nil end
+  local pool = Common.pool(function(e) return e.chan end, function(e)
     if connected() then ii().play_voice(e.chan, e.pitch, 0) end
-  end
+  end)
+  local release = pool.release
 
   local function run_note(i, note, at, seq)
     sched.sleep_until(at)
@@ -118,9 +65,8 @@ function IiVoice.Jf(opts)
     local function pitch_of(bend) return pitch_volts(note.note + (bend - 8192) / 8192 * range) end
     local steps, first_bend = steps_of(note, false)
     ch = ch % 6 + 1
-    if occupant[ch] then release(occupant[ch]) end
     local e = { seq = i, chan = ch, alive = true, pitch = pitch_of(first_bend or 8192) }
-    occupant[ch] = e
+    pool.claim(e)
     local send = changes()
     send("pitch", e.pitch, function() end) -- play_voice carries the pitch
     ii().play_voice(e.chan, e.pitch, level_volts(note.vel / 127))
@@ -139,17 +85,9 @@ function IiVoice.Jf(opts)
     sched.spawn(i, function() run_note(i, note, at, seq) end)
   end
 
-  function v.release_seq(i)
-    sched.cancel(i)
-    for _, e in pairs(occupant) do
-      if e.seq == i then release(e) end
-    end
-  end
+  function v.release_seq(i) pool.release_seq(i, sched) end
 
-  function v.release_all()
-    sched.cancel_all()
-    for _, e in pairs(occupant) do release(e) end
-  end
+  function v.release_all() pool.release_all(sched) end
 
   function v.apply_settings()
     if not connected() then return end
@@ -172,14 +110,10 @@ function IiVoice.Wsyn(opts)
   local sched = scheduler(opts.clock)
   local v = {}
   local voice = 0
-  local occupant = {} -- voice -> the entry sounding on it
-
-  local function release(e)
-    if not e.alive then return end
-    e.alive = false
-    if occupant[e.voice] == e then occupant[e.voice] = nil end
+  local pool = Common.pool(function(e) return e.voice end, function(e)
     if connected() and settings.hold then ii().velocity(e.voice, 0) end
-  end
+  end)
+  local release = pool.release
 
   local function run_note(i, note, at, seq)
     sched.sleep_until(at)
@@ -190,9 +124,8 @@ function IiVoice.Wsyn(opts)
     local steps, first_bend = steps_of(note, settings.hold)
     local n = settings.voices
     voice = (n and n > 0) and (voice % n + 1) or 1
-    if occupant[voice] then release(occupant[voice]) end
     local e = { seq = i, voice = voice, alive = true }
-    occupant[voice] = e
+    pool.claim(e)
     local send = changes()
     local volts = pitch_of(first_bend or 8192)
     send("pitch", volts, function() end) -- play_voice carries the pitch and the velocity
@@ -217,17 +150,9 @@ function IiVoice.Wsyn(opts)
     sched.spawn(i, function() run_note(i, note, at, seq) end)
   end
 
-  function v.release_seq(i)
-    sched.cancel(i)
-    for _, e in pairs(occupant) do
-      if e.seq == i then release(e) end
-    end
-  end
+  function v.release_seq(i) pool.release_seq(i, sched) end
 
-  function v.release_all()
-    sched.cancel_all()
-    for _, e in pairs(occupant) do release(e) end
-  end
+  function v.release_all() pool.release_all(sched) end
 
   function v.apply_settings()
     if not connected() then return end
