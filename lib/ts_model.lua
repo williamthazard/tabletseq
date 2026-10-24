@@ -58,8 +58,11 @@ local function int_in(v, default, lo, hi)
   return default
 end
 
+-- A flag as stored: a boolean, or 1 / 0 (the sidecar writes numbers, which norns's tab.save keeps).
 local function bool_or(v, default)
   if type(v) == "boolean" then return v end
+  if v == 1 then return true end
+  if v == 0 then return false end
   return default
 end
 

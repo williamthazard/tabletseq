@@ -174,7 +174,7 @@ function init()
     end,
   }
   store = Store.new{ tab = tab, model = Model, exists = util.file_exists,
-    remove = function(path) os.execute('rm "' .. path .. '"') end }
+    remove = os.remove }
 
   -- One-shot timer for the tablet's 2 ms report-end wait.
   sched_metro = metro.init()
