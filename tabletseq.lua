@@ -1,0 +1,299 @@
+-- tabletseq
+-- draw loops on a pen tablet
+-- and play them on any voice
+--
+-- plug a wacom one into norns.
+-- the pen's x is time, y is
+-- pitch, pressure is loudness.
+--
+-- E1: pick a sequence (one past
+--     the last is a blank page)
+-- E2: pick a setting
+-- E3: change it
+-- K2: delete the sequence
+--     (press twice)
+-- K3: start or stop on the bar
+--
+-- pen: upper button clears
+-- (press twice), lower undoes
+--
+-- grid: row 1 starts and stops
+-- a sequence, row 2 selects it
+--
+-- beats per bar, the MIDI device,
+-- JF and w/syn, the drum folder
+-- and the tablet live in PARAMS.
+
+engine.name = 'TabletSeq'
+
+local Model = include 'lib/ts_model'
+local Seq = include 'lib/ts_seq'
+local Router = include 'lib/ts_router'
+local EngineVoice = include 'lib/ts_engine_voice'
+local MidiVoice = include 'lib/ts_midi_voice'
+local CrowVoice = include 'lib/ts_crow_voice'
+local Ii = include 'lib/ts_ii_voice'
+local Drums = include 'lib/ts_drums'
+local Tablet = include 'lib/ts_tablet'
+local Draw = include 'lib/ts_draw'
+local Ui = include 'lib/ts_ui'
+local GridUi = include 'lib/ts_grid'
+local Screen = include 'lib/ts_screen'
+local Store = include 'lib/ts_store'
+local Params = include 'lib/ts_params'
+
+local FPS = 30
+local NOTICE = 3                  -- seconds a message stays on screen
+
+local cur                          -- the live set: { selected, sequences }
+local seq, router, drums, ui, draw, gridui, tablet, store, g
+local jf_voice, wsyn_voice
+local used = {}                    -- "jf" / "wsyn": a sequence has played on that module
+local midi_dev
+local redraw_metro, sched_metro
+local active_port                  -- the hid port being read, or nil
+local status                       -- shown on screen when something is wrong
+local notice                       -- { text, until }
+local dirty = true
+local prior_crow_add, prior_hid_add, prior_hid_remove
+local params_api
+
+local function now() return util.time() end
+
+local function crow_here() return norns.crow.connected() end
+
+local function bpb() return params:get("beats_per_bar") end
+
+-- Does the device list ABS_PRESSURE (0x18) among its EV_ABS (3) codes? nil when it doesn't say.
+local function reports_pressure(device)
+  local codes = type(device) == "table" and device.codes
+  local abs = type(codes) == "table" and codes[3]
+  if type(abs) ~= "table" or next(abs) == nil then return nil end
+  if abs[0x18] ~= nil then return true end
+  for _, c in pairs(abs) do
+    if c == 0x18 then return true end
+  end
+  return false
+end
+
+-- Which hid port to read: the chosen one, or the first that looks like the tablet.
+-- `gone` is a device that is being unplugged and no longer counts.
+local function connect_tablet(gone)
+  local devices = {}
+  for i = 1, 4 do
+    local vp = hid.vports[i]
+    local here = vp.device and vp.device ~= gone
+    devices[i] = { name = here and vp.name or "", has_pressure = nil }
+    if here then devices[i].has_pressure = reports_pressure(vp.device) end
+  end
+  local port = tablet.port
+  if not port then port = Tablet.pick(devices) end
+  local target = (port and devices[port].name ~= "") and port or nil
+  -- Leaving the port a stroke may be on: lift it before the old handler is dropped.
+  if active_port and target ~= active_port then tablet:removed() end
+  if active_port then hid.vports[active_port].event = nil end
+  active_port = nil
+  if target then
+    local vp = hid.connect(port)
+    vp.event = function(t, c, v) tablet:event(t, c, v) end
+    tablet:set_model(vp.name)
+    active_port = port
+    status = nil
+  else
+    status = "plug in the tablet"
+  end
+  dirty = true
+end
+
+-- norns' crow.ii.<module> returns a one-off table that every index appends to, so a cached
+-- module accumulates the names of earlier calls. Resolve it afresh on every call.
+local function ii_module(name)
+  return setmetatable({}, { __index = function(_, fn)
+    return function(...) return crow.ii[name][fn](...) end
+  end })
+end
+
+-- A module voice that remembers its first use, so its settings are sent only once it has played.
+local function tracked(name, voice)
+  return setmetatable({ first_use = function()
+    used[name] = true
+    voice.first_use()
+  end }, { __index = voice })
+end
+
+local function say(text)
+  notice = { text = text, ["until"] = now() + NOTICE }
+  dirty = true
+end
+
+local function ports()
+  local names = {}
+  for i = 1, 16 do names[i] = midi.vports[i].name end
+  return names
+end
+
+function init()
+  cur = { selected = 1, sequences = { Model.new_sequence({}) } }
+  used = {}
+  midi_dev = nil
+
+  local engine_voice = EngineVoice.new(engine, clock)
+  drums = Drums.new{ engine_voice = engine_voice, scandir = util.scandir, file_info = util.file_exists }
+  local jf_settings = { mode = 2 }
+  local wsyn_settings = { voices = 4, lpg_time = 0, lpg_symmetry = 0, hold = true }
+  jf_voice = Ii.Jf.new{ ii = function() return crow.ii.jf end, connected = crow_here, clock = clock,
+    settings = jf_settings }
+  wsyn_voice = Ii.Wsyn.new{ ii = function() return crow.ii.wsyn end, connected = crow_here, clock = clock,
+    settings = wsyn_settings }
+  local crow1 = CrowVoice.new{ crow = crow, connected = crow_here, clock = clock, pair = 1 }
+  local crow2 = CrowVoice.new{ crow = crow, connected = crow_here, clock = clock, pair = 2 }
+  router = Router.new{
+    voices = {
+      engine = engine_voice,
+      midi = MidiVoice.new{ dev = function() return midi_dev end, clock = clock },
+      crow1 = crow1, crow2 = crow2,
+      jf = tracked("jf", jf_voice), wsyn = tracked("wsyn", wsyn_voice),
+      drums = drums,
+    },
+    seq_list = function() return cur.sequences end,
+  }
+  seq = Seq.new{ clock = clock, model = Model, router = router, bpb = bpb }
+  ui = Ui.new{ set = function() return cur end, seq = seq, router = router, model = Model, now = now }
+  draw = Draw.new{
+    model = Model, set = function() return cur end, now = now, bpb = bpb,
+    on_change = function(s) seq.changed(s); dirty = true end,
+    on_new = function(s)
+      if #cur.sequences >= Model.MAX_SEQUENCES then return false end
+      cur.sequences[#cur.sequences + 1] = s
+      cur.selected = #cur.sequences
+      ui.sync_engine()
+    end,
+  }
+  store = Store.new{ tab = tab, model = Model, exists = util.file_exists,
+    remove = function(path) os.execute('rm "' .. path .. '"') end }
+
+  -- One-shot timer for the tablet's 2 ms report-end wait.
+  sched_metro = metro.init()
+  sched_metro.time = 0.002
+  local pending
+  sched_metro.event = function()
+    sched_metro:stop()
+    local f = pending
+    pending = nil
+    if f then f() end
+  end
+
+  tablet = Tablet.new{
+    emit = function(evt, d) draw.pen(evt, d); dirty = true end,
+    schedule = function(f, secs)
+      pending = f
+      sched_metro:start(secs, 1)
+    end,
+  }
+  tablet.on_select = function() connect_tablet() end
+
+  prior_hid_add, prior_hid_remove = hid.add, hid.remove
+  hid.add = function() connect_tablet() end
+  hid.remove = function(dev)
+    if active_port and hid.vports[active_port].device == dev then tablet:removed() end
+    connect_tablet(dev)
+  end
+
+  g = grid.connect()
+  gridui = GridUi.new{ g = g, set = function() return cur end, seq = seq }
+  g.key = function(x, y, z) gridui.key(x, y, z); dirty = true end
+
+  crow.ii.pullup(true)
+  -- A crow plugged in later starts blank: pull-ups again, then every output that has played sends
+  -- again what it needs (the pairs their volts; JF and w/syn their settings and neutral timbre).
+  prior_crow_add = norns.crow.add
+  norns.crow.add = function(...)
+    if prior_crow_add then prior_crow_add(...) end
+    crow.ii.pullup(true)
+    crow1.reconnected()
+    crow2.reconnected()
+    if used.jf then jf_voice.first_use() end
+    if used.wsyn then wsyn_voice.first_use() end
+  end
+
+  params_api = Params.add(params, {
+    seq = seq, jf = jf_voice, wsyn = wsyn_voice, jf_settings = jf_settings, wsyn_settings = wsyn_settings,
+    used = function(name) return used[name] end,
+    set_midi = function(d) midi_dev = d end, ports = ports,
+    drums = drums, tablet = tablet, notify = say,
+  })
+
+  -- The sequences live beside the PSET.
+  params.action_write = function(filename)
+    store.save(store.path_for(filename), cur)
+  end
+  params.action_read = function(filename)
+    seq.stop_all()
+    router.release_all()
+    local loaded = store.load(store.path_for(filename))
+    if loaded then
+      cur = loaded
+      ui.sync_engine()
+    end
+    params_api.after_read()
+    dirty = true
+  end
+  params.action_delete = function(filename)
+    store.delete(store.path_for(filename))
+  end
+
+  redraw_metro = metro.init()
+  redraw_metro.time = 1 / FPS
+  redraw_metro.event = function()
+    if notice and now() >= notice["until"] then notice = nil; dirty = true end
+    local busy = false
+    for _, s in ipairs(cur.sequences) do
+      if seq.state(s) ~= "stopped" then busy = true end
+    end
+    gridui.redraw((now() * 2) % 1)
+    if dirty or busy or ui.message() then
+      dirty = false
+      redraw()
+    end
+  end
+  redraw_metro:start()
+
+  params:bang()
+  ui.sync_engine()
+end
+
+function enc(n, d)
+  ui.enc(n, d)
+  dirty = true
+end
+
+function key(n, z)
+  ui.key(n, z)
+  dirty = true
+end
+
+function redraw()
+  local cap = draw.cap()
+  local view = ui.view{
+    bpb = bpb(),
+    hover = draw.hover(),
+    tip = cap and { x = cap.last_x, y = cap.last_y } or nil,
+    blink = math.floor(now() * 4) % 2 == 0,
+  }
+  -- the strip at the bottom: a delete waiting, then a notice; "plug in the tablet" only on the blank page
+  if not view.message then
+    view.message = notice and notice.text or (not view.seq and status) or nil
+  end
+  Screen.draw(screen, view)
+end
+
+function cleanup()
+  seq.stop_all()
+  router.release_all()
+  if redraw_metro then redraw_metro:stop() end
+  if sched_metro then sched_metro:stop() end
+  if active_port then hid.vports[active_port].event = nil end
+  if g then g.key = nil end
+  norns.crow.add = prior_crow_add
+  hid.add, hid.remove = prior_hid_add, prior_hid_remove
+end
