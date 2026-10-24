@@ -354,4 +354,349 @@ function M.stroke_points(stroke, seq, bpb)
   return M.resample(points, M.MAX_ENV_POINTS)
 end
 
+-- Pitch quantize (spec 6.3), notes and the MIDI plan. Ports of the Mac's snapToScale ... midiNotesFor.
+M.P_HARD = 1.0
+-- How far past the midpoint between two scale notes a line must go before the note changes.
+M.SNAP_HYSTERESIS = 0.2
+
+local function scale_degrees(name)
+  for _, s in ipairs(M.SCALES) do
+    if s.name == name then return s.degrees end
+  end
+  return M.SCALES[#M.SCALES].degrees
+end
+
+-- sort by start; equal starts keep their order (table.sort is not stable)
+local function sort_by_start(notes)
+  local keyed = {}
+  for i, n in ipairs(notes) do keyed[i] = { n = n, i = i } end
+  table.sort(keyed, function(a, b)
+    if a.n.start ~= b.n.start then return a.n.start < b.n.start end
+    return a.i < b.i
+  end)
+  local out = {}
+  for i, k in ipairs(keyed) do out[i] = k.n end
+  return out
+end
+
+-- Nearest scale note to `note`; ties go to the lower note. root is a pitch class 0-11.
+function M.snap_to_scale(note, root, scale)
+  local degrees = scale_degrees(scale)
+  local octave = math.floor((note - root) / 12)
+  local best, best_dist = nil, math.huge
+  -- lowest candidates first, so a tie keeps the lower note
+  for o = -1, 1 do
+    for _, d in ipairs(degrees) do
+      local cand = root + d + (octave + o) * 12
+      local dist = math.abs(cand - note)
+      if dist < best_dist - 1e-9 then best, best_dist = cand, dist end
+    end
+  end
+  return best + 0.0
+end
+
+function M.pressure_to_amp(pressure)
+  local f = clip(pressure / M.P_HARD, 0, 1)
+  return 10 ^ ((-40 + 40 * f) / 20)
+end
+
+-- The next scale note above (dir 1) or below (dir -1) the scale note `note`.
+function M.scale_step(note, dir, root, scale)
+  local degrees = scale_degrees(scale)
+  local cand = round_int(note) + dir
+  local tries = 0
+  -- every scale repeats each 12 semitones, so 12 tries always find the next note
+  while not contains(degrees, (cand - root) % 12) and tries < 12 do
+    cand = cand + dir
+    tries = tries + 1
+  end
+  return cand + 0.0
+end
+
+-- Thins a stepped line to at most max_n points, keeping both ends. Points that only carry pressure
+-- (same note as the point before) go first, the most crowded first; then the shortest notes.
+function M.cap_points(pts, max_n)
+  local out = {}
+  for i, p in ipairs(pts) do out[i] = p end
+  while #out > max_n do
+    local best_i, best_cost
+    for i = 2, #out - 1 do
+      local gap = out[i + 1][1] - out[i][1]
+      local cost = (out[i][2] == out[i - 1][2]) and gap or gap + 1e6
+      if best_cost == nil or cost < best_cost then best_i, best_cost = i, cost end
+    end
+    table.remove(out, best_i)
+  end
+  return out
+end
+
+-- Autotune: at every moment the pitch is the scale note nearest the drawn line, so a slide plays
+-- each scale note it passes and the hold curve keeps each note until the next point. A note changes
+-- only once the line is SNAP_HYSTERESIS semitones past the midpoint to the next scale note.
+-- Every input point is kept (its pressure feeds the amp envelope); a point is added at each change.
+-- points: ascending {beat, note, pressure}. Returns {points = ..., curve = "hold"}.
+function M.quantize_pitch(points, root, scale)
+  local h = M.SNAP_HYSTERESIS
+  local cur = M.snap_to_scale(points[1][2], root, scale)
+  local out = { { points[1][1], cur, points[1][3] } }
+  -- a point on the same beat as the last one replaces it, so beats stay strictly ascending
+  local function put(p)
+    if p[1] - out[#out][1] < 1e-9 then out[#out] = p else out[#out + 1] = p end
+  end
+  for i = 1, #points - 1 do
+    local a, b = points[i], points[i + 1]
+    local y = a[2]
+    local moving = true
+    while moving do
+      local up = M.scale_step(cur, 1, root, scale)
+      local down = M.scale_step(cur, -1, root, scale)
+      local up_at = (cur + up) / 2 + h
+      local down_at = (cur + down) / 2 - h
+      local cross
+      if b[2] >= up_at and y < up_at then
+        cur = up
+        cross = up_at
+      elseif b[2] <= down_at and y > down_at then
+        cur = down
+        cross = down_at
+      end
+      if cross == nil then
+        moving = false
+      else
+        -- how far along a -> b the line reaches the threshold
+        local f = (cross - a[2]) / (b[2] - a[2])
+        y = cross
+        put({ a[1] + f * (b[1] - a[1]), cur, a[3] + f * (b[3] - a[3]) })
+      end
+    end
+    put({ b[1], cur, b[3] })
+  end
+  return { points = M.cap_points(out, M.MAX_ENV_POINTS), curve = "hold" }
+end
+
+-- The note for one pitched stroke. points: ascending {beat, note, pressure}, at least 2, at most 32.
+-- Each env is {levels, times}; the pitch env also carries its curve ("lin" or "hold").
+function M.voice_note(points, seq)
+  local grid = 1 / seq.steps_per_beat
+  local q
+  if seq.pitch_quant then
+    q = M.quantize_pitch(points, seq.root, seq.scale)
+  else
+    q = { points = points, curve = "lin" }
+  end
+  local pts = q.points
+  local pitch, amp, times = {}, {}, {}
+  for i, p in ipairs(pts) do
+    pitch[i] = p[2]
+    amp[i] = M.pressure_to_amp(p[3])
+    if i > 1 then times[i - 1] = p[1] - pts[i - 1][1] end
+  end
+  local start, last = pts[1][1], pts[#pts][1]
+  return {
+    kind = "voice",
+    start = start,
+    dur = math.max(last - start, grid),
+    pitch_env = { levels = pitch, times = times, curve = q.curve },
+    amp_env = { levels = amp, times = times },
+  }
+end
+
+-- Strokes whose first beat is at or past the loop end are kept but neither drawn nor played.
+function M.hidden_count(seq, bpb)
+  local loop_beats = M.loop_beats(seq, bpb)
+  local n = 0
+  for _, s in ipairs(seq.strokes) do
+    if s.points[1][1] >= loop_beats then n = n + 1 end
+  end
+  return n
+end
+
+-- The highest pressure from beat lo to beat hi, the ends interpolated.
+function M.peak_pressure(points, lo, hi)
+  local top = math.max(M.interp_at(points, lo)[2], M.interp_at(points, hi)[2])
+  for _, p in ipairs(points) do
+    if p[1] >= lo and p[1] <= hi and p[3] > top then top = p[3] end
+  end
+  return top
+end
+
+-- Hits (spec 6.3 step 4): the kit and drum rack path. points: the stroke after quantizing, cutting
+-- and resampling. Returns {{kind = "hit", start, note, amp, pressure}, ...}.
+function M.drum_notes(stroke, points, seq, bpb)
+  local sp = seq.steps_per_beat
+  local grid = 1 / sp
+  local loop_beats = M.loop_beats(seq, bpb)
+  local first, last = points[1][1], points[#points][1]
+  local stored = stroke.points
+  local top = 0
+  for _, p in ipairs(stored) do top = math.max(top, p[3]) end
+  local function snap(note)
+    if seq.pitch_quant then return M.snap_to_scale(note, seq.root, seq.scale) end
+    return note
+  end
+  -- the highest pressure within half a grid step of the hit, clipped to the stroke
+  local function accent(beat)
+    return M.peak_pressure(points, math.max(beat - grid / 2, first), math.min(beat + grid / 2, last))
+  end
+  local short = #points == 1
+  if not short then
+    short = (stored[#stored][1] - stored[1][1]) < grid
+    if seq.time_quant then
+      short = short or round_int(first * sp) == round_int(last * sp)
+    end
+  end
+  if short then
+    return { { kind = "hit", start = first, note = snap(points[1][2]), amp = M.pressure_to_amp(top), pressure = top } }
+  end
+  local beats = {}
+  if seq.time_quant then
+    local first_step = round_int(first * sp)
+    local steps = round_int(last * sp) - first_step + 1
+    for i = 0, steps - 1 do beats[#beats + 1] = (first_step + i) / sp end
+  else
+    local steps = math.floor((last - first) * sp + 1e-9) + 1
+    for i = 0, steps - 1 do beats[#beats + 1] = first + i * grid end
+  end
+  local out = {}
+  for _, b in ipairs(beats) do
+    if b < loop_beats - 1e-9 then
+      local pressure = accent(b)
+      out[#out + 1] = {
+        kind = "hit", start = b, note = snap(M.interp_at(points, b)[1]),
+        amp = M.pressure_to_amp(pressure), pressure = pressure,
+      }
+    end
+  end
+  return out
+end
+
+-- What the voice plays through (spec 12.4): "engine" (the sine), "hits" (the kit and drum rack)
+-- or "midi" (the MIDI synth, crow, JF and w/syn).
+function M.note_plan_kind(voice)
+  if voice == "sine" then return "engine" end
+  if M.plays_hits(voice) then return "hits" end
+  return "midi"
+end
+
+-- Does the voice sound in the SuperCollider engine?
+function M.uses_engine(voice)
+  return voice == "sine" or voice == "drum rack"
+end
+
+-- All notes of a sequence for one pass of its loop, sorted by start. The sine gets voice notes, the
+-- kit and drum rack get hits, the rest get the MIDI plan.
+function M.notes_for(seq, bpb)
+  local kind = M.note_plan_kind(seq.voice)
+  if kind == "midi" then return M.midi_notes_for(seq, bpb) end
+  local notes = {}
+  for _, stroke in ipairs(seq.strokes) do
+    local points = M.stroke_points(stroke, seq, bpb)
+    if points then
+      if kind == "hits" then
+        for _, h in ipairs(M.drum_notes(stroke, points, seq, bpb)) do notes[#notes + 1] = h end
+      else
+        notes[#notes + 1] = M.voice_note(points, seq)
+      end
+    end
+  end
+  return sort_by_start(notes)
+end
+
+-- 1-127 from pressure, scaled by the sequence's level; 0 means the note is not sent
+-- (MIDI velocity 0 is a note-off).
+function M.midi_velocity(pressure, level)
+  local f = clip(pressure / M.P_HARD, 0, 1)
+  return round_int((1 + f * 126) * level)
+end
+
+-- The lowest channel no other MIDI sequence uses; 16 when all are taken.
+function M.free_channel(seqs, except)
+  local taken = {}
+  for _, s in ipairs(seqs) do
+    if s ~= except and (s.voice == "midi synth" or s.voice == "midi kit") then taken[s.midi_channel] = true end
+  end
+  for ch = 1, 16 do
+    if not taken[ch] then return ch end
+  end
+  return 16
+end
+
+-- MIDI notes for a sequence (spec 6.2-6.3, 12.4), sorted by start:
+-- {kind = "midi", start, dur, note, vel, bends = {{beat from start, 0-16383}, ...},
+--  pressures = {{beat from start, 0-127}, ...}}. Notes whose velocity is 0 are dropped.
+function M.midi_notes_for(seq, bpb)
+  local grid = 1 / seq.steps_per_beat
+  local level = seq.level
+  local notes = {}
+  -- A pen lands at almost no pressure, so a note's velocity is the peak in its first half grid
+  -- step (the window kit hits use), never past the note's end.
+  local function velocity_at(points, start, stop)
+    return M.midi_velocity(M.peak_pressure(points, start, math.min(start + grid / 2, stop)), level)
+  end
+  -- channel pressure, sent only when its 0-127 value changes
+  local function pressures_of(pts, t0)
+    local out = {}
+    for _, p in ipairs(pts) do
+      local v = round_int(clip(p[3] / M.P_HARD, 0, 1) * 127)
+      if #out == 0 or out[#out][2] ~= v then out[#out + 1] = { p[1] - t0, v } end
+    end
+    return out
+  end
+  for _, stroke in ipairs(seq.strokes) do
+    local points = M.stroke_points(stroke, seq, bpb)
+    if points then
+      if seq.voice == "midi kit" then
+        -- every integer note is a pad, so the scale never applies
+        local plain = {}
+        for k, v in pairs(seq) do plain[k] = v end
+        plain.pitch_quant = false
+        for _, hit in ipairs(M.drum_notes(stroke, points, plain, bpb)) do
+          notes[#notes + 1] = {
+            kind = "midi", start = hit.start, dur = grid, note = round_int(hit.note),
+            vel = M.midi_velocity(hit.pressure, level), bends = {}, pressures = {},
+          }
+        end
+      elseif seq.pitch_quant then
+        -- autotune: a new note wherever the stepped pitch changes; no pitch bend
+        local q = M.quantize_pitch(points, seq.root, seq.scale).points
+        local stop = points[#points][1]
+        local segs = {}
+        for _, p in ipairs(q) do
+          local seg = segs[#segs]
+          if seg and seg[#seg][2] == p[2] then seg[#seg + 1] = p else segs[#segs + 1] = { p } end
+        end
+        for i, seg in ipairs(segs) do
+          local s0 = seg[1][1]
+          local s1 = segs[i + 1] and segs[i + 1][1][1] or stop
+          -- a change on the very last point has no length of its own
+          if s1 - s0 > 1e-9 then
+            notes[#notes + 1] = {
+              kind = "midi", start = s0, dur = s1 - s0, note = round_int(seg[1][2]),
+              vel = velocity_at(points, s0, s1), bends = {}, pressures = pressures_of(seg, s0),
+            }
+          end
+        end
+      else
+        -- glide: one note from the rounded first pitch; pitch bend follows the line
+        local t0 = points[1][1]
+        local note = round_int(points[1][2])
+        local range = seq.bend_range
+        local bends = {}
+        for i, p in ipairs(points) do
+          bends[i] = { p[1] - t0, clip(round_int(8192 + (p[2] - note) / range * 8192), 0, 16383) }
+        end
+        notes[#notes + 1] = {
+          kind = "midi", start = t0, dur = math.max(points[#points][1] - t0, grid), note = note,
+          vel = velocity_at(points, t0, points[#points][1]), bends = bends, pressures = pressures_of(points, t0),
+        }
+      end
+    end
+  end
+  local kept = {}
+  for _, n in ipairs(notes) do
+    if n.vel > 0 then kept[#kept + 1] = n end
+  end
+  return sort_by_start(kept)
+end
+
 return M
