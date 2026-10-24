@@ -20,11 +20,12 @@ the first install needs a norns restart, so the new engine (`Engine_TabletSeq`) 
 - several strokes at the same time make a chord.
 - on a drum voice, a line is a roll.
 - time quantize snaps notes to the grid (1/4, 1/8, 1/8 triplets, 1/16, 1/16 triplets or 1/32).
-  pitch quantize snaps pitch to a root and scale (the mac's ten scales, minor pentatonic at first).
+  pitch quantize snaps pitch to a root and scale (the mac's ten scales, minor pentatonic at first);
+  it does not apply to the midi kit or the drum rack, whose notes are rows, so they have no pitch lines.
   neither changes the drawing: turn them off and it is as you drew it.
 - a sequence is 1 to 64 bars long, 4 at first. it loops. what you draw past the loop end is cut.
-- the pen's upper button clears the sequence; press it twice within a second. the lower button
-  undoes the last stroke.
+- the pen's upper button clears the sequence; press it twice within a second (the screen says "pen
+  button again to clear"). the lower button undoes the last stroke.
 - up to 16 sequences.
 
 ## sequences and the bar
@@ -73,7 +74,8 @@ bottom show the sequences, the selected one bright; they appear when there is mo
 
 - E1: pick a sequence. one past the last is a blank page: draw on it to make a new sequence.
 - E2: pick a line in the info column: voice, bars, low, high, level, quantize and grid, pitch
-  quantize, root, scale, channel and bend (midi only), and the sends (sine and drum rack only).
+  quantize, root, scale (not for the midi kit or drum rack), channel and bend (midi only), and the
+  sends (sine and drum rack only).
 - E3: change it.
 - K2: delete the sequence. the screen says "K2 again to delete"; press again within 3 seconds.
 - K3: start or stop on the bar, or cancel a wait.
