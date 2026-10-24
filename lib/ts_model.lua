@@ -570,11 +570,12 @@ function M.drum_notes(stroke, points, seq, bpb)
   return out
 end
 
--- What the voice plays through (spec 12.4): "engine" (the sine), "hits" (the kit and drum rack)
--- or "midi" (the MIDI synth, crow, JF and w/syn).
+-- What the voice plays through (spec 12.4, R13): "engine" (the sine), "hits" (the drum rack only)
+-- or "midi" (the MIDI synth and kit, crow, JF and w/syn). The kit plays the MIDI plan, whose notes
+-- carry its velocity and hit length; the MIDI voice ignores notes of any other kind.
 function M.note_plan_kind(voice)
   if voice == "sine" then return "engine" end
-  if M.plays_hits(voice) then return "hits" end
+  if voice == "drum rack" then return "hits" end
   return "midi"
 end
 
@@ -584,7 +585,7 @@ function M.uses_engine(voice)
 end
 
 -- All notes of a sequence for one pass of its loop, sorted by start. The sine gets voice notes, the
--- kit and drum rack get hits, the rest get the MIDI plan.
+-- drum rack gets hits, the rest (the MIDI kit included) get the MIDI plan.
 function M.notes_for(seq, bpb)
   local kind = M.note_plan_kind(seq.voice)
   if kind == "midi" then return M.midi_notes_for(seq, bpb) end
