@@ -5,7 +5,8 @@
 -- (JF: mode; w/syn: voices, lpg_time, lpg_symmetry, hold). All are passed in.
 -- One voice per module, shared by every sequence: JF's six channels and w/syn's voices rotate globally,
 -- and a stolen one is released first. Module settings are sent by apply_settings only; first_use also
--- sends the neutral timbre, before a session's first note and after crow reconnects.
+-- sends the neutral timbre, before a session's first note and after crow reconnects. A release that
+-- falls due while crow is away is owed: first_use sends it once crow is back.
 -- play(seq_index, note, at[, seq]): `at` is an absolute beat; `seq` may carry bend_range (default 24)
 -- and level (default 1). While crow is absent nothing is sent. No norns globals; Lua 5.3 compatible.
 local Common = include 'lib/ts_voice_common'
@@ -53,8 +54,9 @@ function IiVoice.Jf(opts)
   local sched = scheduler(opts.clock)
   local v = {}
   local ch = 0
+  local owed = {} -- channel -> the pitch of a release skipped while crow was away
   local pool = Common.pool(function(e) return e.chan end, function(e)
-    if connected() then ii().play_voice(e.chan, e.pitch, 0) end
+    if connected() then ii().play_voice(e.chan, e.pitch, 0) else owed[e.chan] = e.pitch end
   end)
   local release = pool.release
 
@@ -67,6 +69,7 @@ function IiVoice.Jf(opts)
     ch = ch % 6 + 1
     local e = { seq = i, chan = ch, alive = true, pitch = pitch_of(first_bend or 8192) }
     pool.claim(e)
+    owed[e.chan] = nil -- the new note replaces what was owed on its channel
     local send = changes()
     send("pitch", e.pitch, function() end) -- play_voice carries the pitch
     ii().play_voice(e.chan, e.pitch, level_volts(note.vel / 127))
@@ -99,6 +102,10 @@ function IiVoice.Jf(opts)
     v.apply_settings()
     ii().run_mode(1)
     ii().run(5 * math.log(NEUTRAL_RATIO, 2))
+    for chan = 1, 6 do
+      if owed[chan] then ii().play_voice(chan, owed[chan], 0) end
+    end
+    owed = {}
   end
 
   return v
@@ -110,8 +117,10 @@ function IiVoice.Wsyn(opts)
   local sched = scheduler(opts.clock)
   local v = {}
   local voice = 0
+  local owed = {} -- voice -> true: a release skipped while crow was away
   local pool = Common.pool(function(e) return e.voice end, function(e)
-    if connected() and settings.hold then ii().velocity(e.voice, 0) end
+    if not settings.hold then return end
+    if connected() then ii().velocity(e.voice, 0) else owed[e.voice] = true end
   end)
   local release = pool.release
 
@@ -126,6 +135,7 @@ function IiVoice.Wsyn(opts)
     voice = (n and n > 0) and (voice % n + 1) or 1
     local e = { seq = i, voice = voice, alive = true }
     pool.claim(e)
+    owed[e.voice] = nil
     local send = changes()
     local volts = pitch_of(first_bend or 8192)
     send("pitch", volts, function() end) -- play_voice carries the pitch and the velocity
@@ -170,6 +180,11 @@ function IiVoice.Wsyn(opts)
     ii().ramp(10 * (0.5 - ramp_at(0.5)))
     ii().fm_index(math.min(depth_at(0.5, 2), 5))
     ii().fm_ratio(NEUTRAL_RATIO, 1)
+    local voices = {}
+    for n in pairs(owed) do voices[#voices + 1] = n end
+    table.sort(voices)
+    for _, n in ipairs(voices) do ii().velocity(n, 0) end
+    owed = {}
   end
 
   return v
