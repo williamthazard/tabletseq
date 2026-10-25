@@ -11,7 +11,8 @@
 --   lines  = {{label, value}, ...}, line = the index E2 has selected,
 --   dots   = { selected = index, states = {state, ...} },
 --   blink  = true on the bright half of the waiting blink,
---   message = text for the bottom strip, or nil }
+--   message = text for the bottom strip, or nil,
+--   readings = the tablet's readings (ts_tablet), drawn instead of everything else, or nil }
 local Screen = {}
 
 local W, H = 82, 64        -- the canvas
@@ -131,9 +132,33 @@ local function dots(s, view)
   end
 end
 
+-- The tablet readings page (PARAMS > tablet readings), in place of the normal page.
+local function readings(s, r)
+  local rows = {
+    "max x " .. r.max_x,
+    "max y " .. r.max_y,
+    "max p " .. r.max_p,
+    "button " .. (r.button and (r.button .. " (" .. r.button_code .. ")") or "none"),
+    "x " .. r.x .. "  y " .. r.y .. "  p " .. r.p,
+    "PARAMS > tablet readings: off",
+  }
+  s.font_face(1)
+  s.font_size(8)
+  for i, text in ipairs(rows) do
+    s.level(i == #rows and 4 or 15)
+    s.move(2, 8 + (i - 1) * 10)
+    s.text(text)
+  end
+end
+
 function Screen.draw(s, view)
   s.clear()
   s.aa(0)
+  if view.readings then
+    readings(s, view.readings)
+    s.update()
+    return
+  end
   if view.seq then
     canvas(s, view)
     info(s, view)

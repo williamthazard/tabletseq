@@ -81,6 +81,15 @@ bottom show the sequences, the selected one bright; they appear when there is mo
 - K3: start or stop on the bar, or cancel a wait.
 - K1 stays norns'.
 
+## tablet readings
+
+PARAMS > tablet readings shows the tablet's raw numbers on the screen in place of the normal page:
+the biggest x, y and pressure it has reported since you switched it on, the live x, y and pressure,
+and the last pen button pressed (upper or lower, with its code, STYLUS or STYLUS2). drag the pen to
+every corner and press hard to read the tablet's real range, and press each button to see which is
+which. playing still works underneath. it is off at first, is not saved in psets, and switching it
+on starts the readings again.
+
 ## the grid
 
 optional. everything works from the keys without it.

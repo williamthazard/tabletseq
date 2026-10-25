@@ -108,6 +108,13 @@ function Params.add(p, deps)
   p:set_action("tablet", function(i) deps.tablet:select(i > 1 and i - 1 or nil) end)
   p:add_binary("flip", "flip 180", "toggle", 0)
   p:set_action("flip", function(v) deps.tablet:set_flip(v == 1) end)
+  -- Shows the tablet's raw x, y, pressure and button readings in place of the normal page, to learn
+  -- the tablet's ranges and which pen button is which. Never saved in a PSET.
+  p:add_binary("tablet_readings", "tablet readings", "toggle", 0)
+  p:set_save("tablet_readings", false)
+  p:set_action("tablet_readings", function(v)
+    if v == 1 then deps.tablet:reset_readings() end
+  end)
 
   -- Reverb and delay live in the engine, after the sequences' groups; each sequence's sends feed them. Each action sends its value to the
   -- engine command of the same name; params:bang() then brings the engine in line.
