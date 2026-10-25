@@ -302,11 +302,11 @@ function redraw()
     tip = cap and { x = cap.last_x, y = cap.last_y } or nil,
     blink = math.floor(now() * 4) % 2 == 0,
   }
-  -- the strip at the bottom: a delete waiting, a clear waiting, then a notice; "plug in the tablet"
-  -- only on the blank page
+  -- the strip at the bottom: a delete waiting, a clear waiting, then a notice, then "plug in the tablet"
+  -- on any page
   if not view.message and draw.pending_clear() then view.message = CLEAR_TEXT end
   if not view.message then
-    view.message = notice and notice.text or (not view.seq and status) or nil
+    view.message = notice and notice.text or status
   end
   if params:get("tablet_readings") == 1 then view.readings = tablet:readings() end
   Screen.draw(screen, view)
