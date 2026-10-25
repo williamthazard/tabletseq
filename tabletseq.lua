@@ -1,28 +1,28 @@
--- tabletseq
--- draw loops on a pen tablet
--- and play them on any voice
---
--- plug a wacom one into norns.
--- the pen's x is time, y is
--- pitch, pressure is loudness.
---
--- E1: pick a sequence (one past
---     the last is a blank page)
--- E2: pick a setting
--- E3: change it
--- K2: delete the sequence
---     (press twice)
--- K3: start or stop on the bar
---
--- pen: upper button clears
--- (press twice), lower undoes
---
--- grid: row 1 starts and stops
--- a sequence, row 2 selects it
---
--- beats per bar, the MIDI device,
--- JF and w/syn, the drum folder
--- and the tablet live in PARAMS.
+---tabletseq
+---
+---draw loops on a
+---wacom one and play
+---them on any voice.
+---
+---x is time
+---y is pitch
+---pressure is loudness
+---
+---E1: choose sequence
+---  (past the last: new)
+---E2: choose setting
+---E3: change setting
+---K2 twice: delete
+---K3: start or stop
+---
+---pen buttons:
+---upper twice: clear
+---lower: undo
+---
+---grid row 1: start/stop
+---grid row 2: select
+---
+---more in PARAMS
 
 engine.name = 'TabletSeq'
 
