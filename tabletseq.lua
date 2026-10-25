@@ -61,7 +61,7 @@ local prior_tempo_handler
 local last_tempo
 local poll_at = 0
 local params_api
-local strip_shown = false     -- was a confirm showing in the bottom strip at the last tick
+local live_shown = false      -- did the last tick keep the screen drawing (something playing, waiting or shown)
 local CLEAR_TEXT = "pen button again to clear"
 
 local function now() return util.time() end
@@ -264,13 +264,15 @@ function init()
     for _, s in ipairs(cur.sequences) do
       if seq.state(s) ~= "stopped" then busy = true end
     end
-    -- a confirm waiting in the bottom strip keeps the screen drawn; one tick after it lapses redraws
-    -- once more so its text goes
-    local strip = ui.message() ~= nil or draw.pending_clear()
-    if strip ~= strip_shown then dirty = true end
-    strip_shown = strip
+    -- Anything that keeps the screen drawing on its own (a sequence that is not stopped, a confirm
+    -- waiting in the bottom strip, the readings page) ends without a call to mark the screen dirty:
+    -- the tick after it ends draws once more, so the last frame (the waiting blink, the prompt, the
+    -- readings) does not stay on the screen.
+    local live = busy or ui.message() ~= nil or draw.pending_clear() or params:get("tablet_readings") == 1
+    if live ~= live_shown then dirty = true end
+    live_shown = live
     gridui.redraw((now() * 2) % 1)
-    if dirty or busy or strip then
+    if dirty or live then
       dirty = false
       redraw()
     end
@@ -306,6 +308,7 @@ function redraw()
   if not view.message then
     view.message = notice and notice.text or (not view.seq and status) or nil
   end
+  if params:get("tablet_readings") == 1 then view.readings = tablet:readings() end
   Screen.draw(screen, view)
 end
 
