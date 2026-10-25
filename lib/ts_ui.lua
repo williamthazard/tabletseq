@@ -61,7 +61,13 @@ function Ui.new(opts)
   end
 
   -- is s in the list? The draft is not, and the engine and sequencer know sequences by their index.
-  local function listed(s) return s ~= set().draft end
+  -- (A draft being drawn on is added first, so it counts as soon as it is in the list.)
+  local function listed(s)
+    for _, q in ipairs(set().sequences) do
+      if q == s then return true end
+    end
+    return false
+  end
 
   local function push_sends(s)
     if not listed(s) then return end
@@ -250,6 +256,7 @@ function Ui.new(opts)
       hover = ctx.hover, tip = ctx.tip, blink = ctx.blink,
       -- the stroke being drawn shows only on the sequence it is drawn on (E1 may have moved on)
       stroke = ctx.stroke and ctx.stroke.seq == shown and ctx.stroke.points or nil,
+      stroke_space = ctx.stroke and { loop_beats = ctx.stroke.loop_beats, low = ctx.stroke.low, high = ctx.stroke.high } or nil,
       lines = self.info_lines(shown),
       line = self.line(),
       dots = { selected = cur.selected or #cur.sequences + 1, states = states },

@@ -266,6 +266,23 @@ function M.extend_stroke(cap, x, y, p)
 end
 
 -- A dot, or a line with strictly ascending beats; the capture itself is left unchanged.
+-- Settings may change under a stroke in progress (voice, range, bars). Its points keep their place on
+-- the canvas: they are mapped from the space they were captured in to the sequence's current one.
+function M.fit_capture(cap, bpb)
+  local seq = cap.seq
+  local loop_beats = M.loop_beats(seq, bpb)
+  if loop_beats == cap.loop_beats and seq.low == cap.low and seq.high == cap.high then return cap end
+  local function fit(p)
+    p[1] = p[1] / cap.loop_beats * loop_beats
+    p[2] = seq.high - (cap.high - p[2]) / (cap.high - cap.low) * (seq.high - seq.low)
+  end
+  local seen = {}
+  for _, p in ipairs(cap.points) do seen[p] = true; fit(p) end
+  if not seen[cap.down] then fit(cap.down) end
+  cap.loop_beats, cap.low, cap.high = loop_beats, seq.low, seq.high
+  return cap
+end
+
 function M.finish_stroke(cap)
   local points = cap.points
   local dot = { kind = "dot", points = { { cap.down[1], cap.down[2], cap.max_pressure } } }

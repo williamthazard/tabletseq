@@ -59,8 +59,9 @@ end
 
 -- The stroke being drawn, as a finished one is (unquantized: the pen's own path). Points less than a
 -- pixel from the last one drawn are skipped, so a long stroke stays cheap.
-local function live_stroke(s, seq, loop_beats, pts)
-  local low, high = seq.low, seq.high
+-- space: the loop length and range the points were captured in (they may differ from the sequence's now)
+local function live_stroke(s, space, pts)
+  local loop_beats, low, high = space.loop_beats, space.low, space.high
   local function pos(p)
     return p[1] / loop_beats * W, (high - p[2]) / (high - low) * (H - 1)
   end
@@ -74,6 +75,7 @@ local function live_stroke(s, seq, loop_beats, pts)
   end
   local x0, y0 = pos(pts[1])
   local p0 = pts[1]
+  local drawn = false
   for i = 2, #pts do
     local x1, y1 = pos(pts[i])
     if (x1 - x0) ^ 2 + (y1 - y0) ^ 2 >= 1 then
@@ -82,7 +84,14 @@ local function live_stroke(s, seq, loop_beats, pts)
       s.line(x1, y1)
       s.stroke()
       x0, y0, p0 = x1, y1, pts[i]
+      drawn = true
     end
+  end
+  -- a jittery tap or hold never leaves its first pixel: it stays a dot
+  if not drawn then
+    s.level(3 + round(12 * pts[1][3]))
+    s.circle(x0, y0, 1.5)
+    s.fill()
   end
 end
 
@@ -99,7 +108,9 @@ local function canvas(s, view)
     s.stroke()
   end
   strokes(s, seq, loop_beats)
-  if view.stroke then live_stroke(s, seq, loop_beats, view.stroke) end
+  if view.stroke then
+    live_stroke(s, view.stroke_space or { loop_beats = loop_beats, low = seq.low, high = seq.high }, view.stroke)
+  end
   if view.playhead then
     local x = px(view.playhead / loop_beats * W)
     s.level(15)

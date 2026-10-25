@@ -29,7 +29,7 @@ function Draw.new(opts)
     if not cap then return end
     local c = cap
     cap = nil
-    c.seq.strokes[#c.seq.strokes + 1] = model.finish_stroke(c)
+    c.seq.strokes[#c.seq.strokes + 1] = model.finish_stroke(model.fit_capture(c, bpb()))
     on_change(c.seq)
   end
 
