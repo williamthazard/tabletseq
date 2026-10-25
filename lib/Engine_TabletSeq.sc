@@ -2,10 +2,11 @@
 // effects they send to (reverb, delay and Carter's delay, ported from just draw for norns).
 // The only SuperCollider class in the script; the SynthDefs live in ts_sine.scd, ts_oneshot.scd,
 // ts_fx.scd and ts_grains.scd.
+// The tail of the node order is the output stage (\ts_out: engine level and a -1 dBFS limiter).
 // Every note starts in its sequence's group (1-16), so level and sends act live on the sounding notes.
 Engine_TabletSeq : CroneEngine {
 	var master, groups, levels, sends, buffers, decodeEnv;
-	var reverbBus, delayBus, grainsBus, fxGroup, delay, reverb;
+	var reverbBus, delayBus, grainsBus, fxGroup, outGroup, delay, reverb, outStage, outLevel = 0.316;
 	// Carter's delay (ts_grains.scd): nothing is allocated until grains_on 1. grainSet holds every
 	// setting, so values sent while the chain is off (or still allocating) apply when it comes up.
 	var grainsOn = false, grainsLive = false, grainsGen = 0;
@@ -50,6 +51,10 @@ Engine_TabletSeq : CroneEngine {
 		fxGroup = Group.after(master);
 		reverb = Synth.new(\ts_reverb, [\in, reverbBus, \out, context.out_b], fxGroup);
 		delay = Synth.new(\ts_delay, [\in, delayBus, \out, context.out_b, \reverbOut, reverbBus], fxGroup);
+		// The output stage runs last of all. Carter's delay groups are made with Group.after(fxGroup),
+		// which puts them between fxGroup and outGroup, so they still run before it.
+		outGroup = Group.after(fxGroup);
+		outStage = Synth.new(\ts_out, [\out, context.out_b, \level, outLevel], outGroup);
 
 		this.addCommand(\sine_note, "iffs", { arg msg;
 			var group = this.groupFor(msg[1]);
@@ -99,6 +104,12 @@ Engine_TabletSeq : CroneEngine {
 		].do { |row|
 			this.addCommand(row[0], "f", { arg msg; row[1].value.set(row[2], msg[1]) });
 		};
+
+		// The engine level, a linear amp, ahead of the limiter.
+		this.addCommand(\set_out_level, "f", { arg msg;
+			outLevel = msg[1];
+			outStage.set(\level, outLevel);
+		});
 
 		// Carter's delay.
 		this.addCommand(\grains_on, "i", { arg msg;
@@ -318,6 +329,8 @@ Engine_TabletSeq : CroneEngine {
 		this.freeGrains;
 		delay.free;
 		reverb.free;
+		outStage.free;
+		outGroup.free;
 		fxGroup.free;
 		master.free;
 		buffers.do { |buf| if(buf.notNil) { buf.free } };

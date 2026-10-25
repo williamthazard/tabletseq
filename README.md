@@ -109,10 +109,18 @@ default.
 - carter's delay: a granular delay (from schicksalslied 2) that is allocated only while its switch
   is on. its granular switches, feedback patch and grain lfo rates are in params too.
 
+## engine level and the limiter
+
+everything the engine makes (the sine, the drum rack, the effects and carter's delay) passes through
+one output stage: "engine level" in params (-60 to +6 db, -10 db by default), then a safety limiter
+at -1 dbfs. the default leaves headroom so the norns is not overloaded; turn it up if the sound is
+too quiet, or down if the limiter still bites. it is saved in psets. midi, crow, jf and w/syn do not
+pass through it.
+
 ## saving
 
 everything that is not per sequence is a param, so a norns pset saves and loads it: beats per bar,
-the module settings, the midi device, the effects, the drum folder, the tablet and flip.
+the engine level, the module settings, the midi device, the effects, the drum folder, the tablet and flip.
 
 the sequences (every drawing and its settings, and which is selected) are saved in a file beside the
 pset, `<pset>.tabletseq`, whenever a pset is written, and loaded when one is read. drawings that are
