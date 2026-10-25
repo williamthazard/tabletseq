@@ -93,14 +93,24 @@ function M.loop_beats(seq, bpb)
   return seq.bars * bpb
 end
 
--- The voice's default range is applied only while the sequence has no strokes.
+-- The voice's default range is applied while the range is still the old voice's default (or there are
+-- no strokes). Strokes drawn on the old range are rescaled so the drawing keeps its place on screen.
 function M.set_voice(seq, voice)
   local r = M.RANGES[voice]
   if r then
-    seq.voice = voice
+    local old = M.RANGES[seq.voice]
     if #seq.strokes == 0 then
       seq.low, seq.high = r[1], r[2]
+    elseif old and seq.low == old[1] and seq.high == old[2] and (r[1] ~= old[1] or r[2] ~= old[2]) then
+      local span = old[2] - old[1]
+      for _, stroke in ipairs(seq.strokes) do
+        for _, p in ipairs(stroke.points) do
+          p[2] = r[1] + (p[2] - old[1]) / span * (r[2] - r[1])
+        end
+      end
+      seq.low, seq.high = r[1], r[2]
     end
+    seq.voice = voice
   end
   return seq
 end
