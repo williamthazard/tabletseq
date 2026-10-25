@@ -1,7 +1,7 @@
--- Encoders and keys (spec 5.4). E1 scrolls the sequences (one empty page past the last), E2 picks
--- a line of the info column, E3 changes it. K3 starts and stops, K2 twice deletes.
+-- Encoders and keys (spec 5.4). E1 scrolls the sequences (one blank page past the last, which edits
+-- the draft of the next sequence), E2 picks a line of the info column, E3 changes it. K3 starts and stops, K2 twice deletes.
 -- Dependencies are passed in; no norns globals; Lua 5.3 compatible.
---   set()  -> the live { selected, sequences } (the empty page is selected = #sequences + 1)
+--   set()  -> the live { selected, sequences } (the blank page is selected = #sequences + 1)
 --   seq    -> ts_seq: toggle, changed, state, stop_now, playhead
 --   router -> ts_router: set_level, set_send, release_seq
 --   model  -> ts_model;  now() -> seconds
@@ -55,7 +55,16 @@ function Ui.new(opts)
     return cur.selected and cur.sequences[cur.selected] or nil
   end
 
+  -- the sequence E2 and E3 work on: the selected one, or the draft on the blank page
+  local function editable()
+    return selected_seq() or model.draft(set())
+  end
+
+  -- is s in the list? The draft is not, and the engine and sequencer know sequences by their index.
+  local function listed(s) return s ~= set().draft end
+
   local function push_sends(s)
+    if not listed(s) then return end
     for _, send in ipairs(SENDS) do router.set_send(s, send[2], s[send[2] .. "_send"]) end
   end
 
@@ -68,11 +77,11 @@ function Ui.new(opts)
         local v = voices[clip(index_of(voices, s.voice) + d, 1, #voices)]
         if v == s.voice then return false end
         -- the old voice's notes end first, on whichever target held them
-        router.release_seq(s)
+        if listed(s) then router.release_seq(s) end
         local was_midi = is_midi(s)
         model.set_voice(s, v)
         if is_midi(s) and not was_midi then s.midi_channel = model.free_channel(set().sequences, s) end
-        router.set_level(s, s.level)
+        if listed(s) then router.set_level(s, s.level) end
         push_sends(s)
       end,
     },
@@ -92,7 +101,7 @@ function Ui.new(opts)
       show = function(s) return string.format("%.2f", s.level) end,
       turn = function(s, d)
         s.level = level_step(s.level, d)
-        router.set_level(s, s.level)
+        if listed(s) then router.set_level(s, s.level) end
       end,
     },
     quant = {
@@ -135,7 +144,7 @@ function Ui.new(opts)
       show = function(s) return string.format("%.2f", s[field]) end,
       turn = function(s, d)
         s[field] = level_step(s[field], d)
-        router.set_send(s, send[2], s[field])
+        if listed(s) then router.set_send(s, send[2], s[field]) end
       end,
     }
   end
@@ -157,10 +166,9 @@ function Ui.new(opts)
     return out
   end
 
-  -- the selected line, kept within the selected sequence's lines
+  -- the selected line, kept within the edited sequence's lines
   function self.line()
-    local s = selected_seq()
-    if not s then return line_i end
+    local s = editable()
     return clip(line_i, 1, #self.info_lines(s))
   end
 
@@ -180,13 +188,12 @@ function Ui.new(opts)
       local limit = math.max(math.min(count + 1, model.MAX_SEQUENCES), 1)
       cur.selected = clip((cur.selected or count + 1) + d, 1, limit)
     elseif n == 2 then
-      local s = selected_seq()
-      if s then line_i = clip(self.line() + d, 1, #self.info_lines(s)) end
+      local s = editable()
+      line_i = clip(self.line() + d, 1, #self.info_lines(s))
     elseif n == 3 then
-      local s = selected_seq()
-      if not s then return end
+      local s = editable()
       local id = self.info_lines(s)[self.line()][1]
-      if SETTINGS[id].turn(s, d) ~= false then seq.changed(s) end
+      if SETTINGS[id].turn(s, d) ~= false and listed(s) then seq.changed(s) end
     end
   end
 
@@ -231,15 +238,17 @@ function Ui.new(opts)
   function self.view(ctx)
     local cur = set()
     local s = selected_seq()
+    local shown = s or editable()
     local states = {}
     for i, q in ipairs(cur.sequences) do states[i] = seq.state(q) end
     return {
-      seq = s,
+      seq = shown,
+      new = s == nil,
       bpb = ctx.bpb,
       state = s and seq.state(s) or "stopped",
       playhead = s and seq.playhead(s) or nil,
       hover = ctx.hover, tip = ctx.tip, blink = ctx.blink,
-      lines = s and self.info_lines(s) or {},
+      lines = self.info_lines(shown),
       line = self.line(),
       dots = { selected = cur.selected or #cur.sequences + 1, states = states },
       message = self.message(),

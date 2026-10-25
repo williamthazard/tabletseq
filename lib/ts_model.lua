@@ -89,6 +89,19 @@ function M.new_sequence(seqs)
   }
 end
 
+-- The blank page's draft: an ordinary sequence kept on the set (set.draft) but not in its list, made
+-- when first asked for. Drawing on the blank page moves it into the list; reset_draft then drops it so
+-- the next blank page gets a fresh one. The store writes only selected and sequences, so a draft is
+-- never saved.
+function M.draft(set)
+  if not set.draft then set.draft = M.new_sequence(set.sequences) end
+  return set.draft
+end
+
+function M.reset_draft(set)
+  set.draft = nil
+end
+
 function M.loop_beats(seq, bpb)
   return seq.bars * bpb
 end

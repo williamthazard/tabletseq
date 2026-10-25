@@ -8,7 +8,8 @@ local CLEAR_WINDOW = 1.0 -- seconds
 -- model: ts_model; set: fn() -> { selected = 1-based or nil, sequences = {...} };
 -- now: fn() -> seconds; bpb: fn() -> beats per bar (default 4);
 -- on_change(seq): the sequence's strokes changed; on_new(seq): a sequence was made for a stroke
--- on the empty page, to be added and selected by the caller (returning false refuses it).
+-- on the blank page (its draft, with the settings chosen there), to be added and selected by the caller
+-- (returning false refuses it, and the draft stays the draft).
 function Draw.new(opts)
   local model, set, now = opts.model, opts.set, opts.now
   local bpb = opts.bpb or function() return 4 end
@@ -36,8 +37,19 @@ function Draw.new(opts)
     finish() -- a stroke left open (the tablet changed under it) is closed first
     local seq = selected_seq()
     if not seq then
-      seq = model.new_sequence(set().sequences)
+      local cur = set()
+      seq = model.draft(cur)
+      -- another MIDI sequence may have taken the draft's channel since it was chosen
+      if (seq.voice == "midi synth" or seq.voice == "midi kit") then
+        for _, other in ipairs(cur.sequences) do
+          if (other.voice == "midi synth" or other.voice == "midi kit") and other.midi_channel == seq.midi_channel then
+            seq.midi_channel = model.free_channel(cur.sequences, seq)
+            break
+          end
+        end
+      end
       if on_new(seq) == false then return end
+      model.reset_draft(cur)
     end
     hover = nil
     cap = model.begin_stroke(seq, bpb(), d.x, d.y, d.p)

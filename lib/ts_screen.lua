@@ -3,7 +3,8 @@
 -- Lua 5.3 compatible.
 --
 -- view = {
---   seq    = the selected sequence, or nil on the empty page,
+--   seq    = the selected sequence, or the draft on the blank page,
+--   new    = true on the blank page, which is marked "new",
 --   bpb    = beats per bar (default 4),
 --   state  = "stopped" | "starting" | "playing" | "stopping",
 --   playhead = beat within the loop, or nil,
@@ -162,14 +163,13 @@ function Screen.draw(s, view)
   if view.seq then
     canvas(s, view)
     info(s, view)
-  else
-    s.font_face(1)
-    s.font_size(8)
-    s.level(10)
-    s.move(64, 28)
-    s.text_center("draw to start")
-    s.move(64, 37)
-    s.text_center("a new sequence")
+    if view.new then
+      s.font_face(1)
+      s.font_size(8)
+      s.level(5)
+      s.move(2, 8)
+      s.text("new")
+    end
   end
   dots(s, view)
   if view.message then

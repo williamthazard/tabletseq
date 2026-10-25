@@ -72,7 +72,7 @@ the canvas fills the screen left of a narrow info column. it shows the selected 
 (brighter with pressure), the playhead, a faint bar grid, and the pen's hover ring. dots along the
 bottom show the sequences, the selected one bright; they appear when there is more than one.
 
-- E1: pick a sequence. one past the last is a blank page: draw on it to make a new sequence.
+- E1: pick a sequence. one past the last is a blank page, marked new: choose its settings (voice, bars and the rest) with E2 and E3 before drawing, and drawing on it makes the new sequence.
 - E2: pick a line in the info column: voice, bars, low, high, level, quantize and grid, pitch
   quantize, root, scale (not for the midi kit or drum rack), channel and bend (midi only), and the
   sends (sine and drum rack only).
