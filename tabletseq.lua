@@ -300,6 +300,7 @@ function redraw()
     bpb = bpb(),
     hover = draw.hover(),
     tip = cap and { x = cap.last_x, y = cap.last_y } or nil,
+    stroke = cap,
     blink = math.floor(now() * 4) % 2 == 0,
   }
   -- the strip at the bottom: a delete waiting, a clear waiting, then a notice, then "plug in the tablet"

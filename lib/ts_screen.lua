@@ -8,6 +8,7 @@
 --   bpb    = beats per bar (default 4),
 --   state  = "stopped" | "starting" | "playing" | "stopping",
 --   playhead = beat within the loop, or nil,
+--   stroke = the points {beat, note, pressure} of the stroke being drawn on seq, or nil,
 --   hover  = {x, y} and tip = {x, y}, fractions of the canvas, or nil,
 --   lines  = {{label, value}, ...}, line = the index E2 has selected,
 --   dots   = { selected = index, states = {state, ...} },
@@ -56,6 +57,35 @@ local function strokes(s, seq, loop_beats)
   end
 end
 
+-- The stroke being drawn, as a finished one is (unquantized: the pen's own path). Points less than a
+-- pixel from the last one drawn are skipped, so a long stroke stays cheap.
+local function live_stroke(s, seq, loop_beats, pts)
+  local low, high = seq.low, seq.high
+  local function pos(p)
+    return p[1] / loop_beats * W, (high - p[2]) / (high - low) * (H - 1)
+  end
+  s.line_width(1)
+  if #pts == 1 then
+    local x, y = pos(pts[1])
+    s.level(3 + round(12 * pts[1][3]))
+    s.circle(x, y, 1.5)
+    s.fill()
+    return
+  end
+  local x0, y0 = pos(pts[1])
+  local p0 = pts[1]
+  for i = 2, #pts do
+    local x1, y1 = pos(pts[i])
+    if (x1 - x0) ^ 2 + (y1 - y0) ^ 2 >= 1 then
+      s.level(3 + round(12 * (p0[3] + pts[i][3]) / 2))
+      s.move(x0, y0)
+      s.line(x1, y1)
+      s.stroke()
+      x0, y0, p0 = x1, y1, pts[i]
+    end
+  end
+end
+
 local function canvas(s, view)
   local seq = view.seq
   local loop_beats = seq.bars * (view.bpb or 4)
@@ -69,6 +99,7 @@ local function canvas(s, view)
     s.stroke()
   end
   strokes(s, seq, loop_beats)
+  if view.stroke then live_stroke(s, seq, loop_beats, view.stroke) end
   if view.playhead then
     local x = px(view.playhead / loop_beats * W)
     s.level(15)

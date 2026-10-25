@@ -234,7 +234,7 @@ function Ui.new(opts)
     end
   end
 
-  -- What Screen.draw takes. ctx: bpb, hover, tip, blink.
+  -- What Screen.draw takes. ctx: bpb, hover, tip, blink, stroke (the capture in progress, ts_draw's cap).
   function self.view(ctx)
     local cur = set()
     local s = selected_seq()
@@ -248,6 +248,8 @@ function Ui.new(opts)
       state = s and seq.state(s) or "stopped",
       playhead = s and seq.playhead(s) or nil,
       hover = ctx.hover, tip = ctx.tip, blink = ctx.blink,
+      -- the stroke being drawn shows only on the sequence it is drawn on (E1 may have moved on)
+      stroke = ctx.stroke and ctx.stroke.seq == shown and ctx.stroke.points or nil,
       lines = self.info_lines(shown),
       line = self.line(),
       dots = { selected = cur.selected or #cur.sequences + 1, states = states },
