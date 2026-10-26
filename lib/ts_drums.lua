@@ -46,6 +46,9 @@ function Drums.new(opts)
     return out
   end
 
+  -- The file name in slot 1-16, or nil when the slot is empty.
+  function d.name(slot) return files[slot] end
+
   -- A hit on a row with no sample sends nothing.
   function d.play(seq_index, note, at)
     if note.kind == "hit" and files[note.note - 35] then ev.play(seq_index, note, at) end

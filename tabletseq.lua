@@ -156,7 +156,8 @@ function init()
     seq_list = function() return cur.sequences end,
   }
   seq = Seq.new{ clock = clock, model = Model, router = router, bpb = bpb }
-  ui = Ui.new{ set = function() return cur end, seq = seq, router = router, model = Model, now = now, notify = say }
+  ui = Ui.new{ set = function() return cur end, seq = seq, router = router, model = Model, now = now, notify = say,
+    drum_name = function(slot) return drums.name(slot) end }
   draw = Draw.new{
     model = Model, set = function() return cur end, now = now, bpb = bpb,
     on_change = function(s) seq.changed(s); dirty = true end,

@@ -5,6 +5,7 @@
 --   seq    -> ts_seq: toggle, changed, state, stop_now, playhead
 --   router -> ts_router: set_level, set_send, release_seq
 --   model  -> ts_model;  now() -> seconds
+--   drum_name(slot) -> the drum rack's sample file name in that slot, or nil (optional)
 local Ui = {}
 
 local DELETE_WINDOW = 3.0 -- seconds
@@ -45,6 +46,8 @@ local function clip(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 
 local function note_name(n) return NOTE_NAMES[n % 12 + 1] .. (n // 12 - 1) end
 
+local function round(v) return math.floor(v + 0.5) end
+
 local function on_off(v) return v and "on" or "off" end
 
 local function level_step(v, d) return clip(math.floor((v + d * LEVEL_STEP) * 20 + 0.5) / 20, 0, 1) end
@@ -62,6 +65,7 @@ local function is_midi(seq) return seq.voice == "midi synth" or seq.voice == "mi
 function Ui.new(opts)
   local set, seq, router, model, now = opts.set, opts.seq, opts.router, opts.model, opts.now
   local notify = opts.notify or function() end
+  local drum_name = opts.drum_name or function() return nil end
   local line_i = 1
   local pending = nil -- { seq, at }: the first K2 of a delete
   local self = {}
@@ -286,6 +290,43 @@ function Ui.new(opts)
     end
   end
 
+  -- What is under the pen at canvas fraction (x, y), for the info column: { lines = {...} } for the rows,
+  -- { big = "E4" } for a pitch. Pitch quantize shows the note the stroke snaps to.
+  local function readout(s, pen)
+    local bottom, top = model.canvas_span(s)
+    local pitch = top - clip(pen.y, 0, 1) * (top - bottom)
+    if model.plays_hits(s.voice) then
+      local row = clip(round(pitch), s.low, s.high)
+      if s.voice == "midi kit" then return { lines = { row .. " " .. note_name(row) } } end
+      local slot = row - 35
+      local name = drum_name(slot)
+      local count = "row " .. slot .. "/16"
+      if not name then return { lines = { count, "empty" } } end
+      return { lines = { name:gsub("%.%w+$", ""):sub(1, 9), count } }
+    end
+    if s.pitch_quant then pitch = model.snap_to_scale(pitch, s.root, s.scale) end
+    return { big = note_name(round(pitch)) }
+  end
+
+  -- The pitches of the guide lines drawn under the strokes: the row boundaries for rows; for pitches the
+  -- root notes in range, and with pitch quantize on every in-scale note (the screen drops them when they
+  -- crowd).
+  local function guides(s)
+    local g = {}
+    if model.plays_hits(s.voice) then
+      g.rows = {}
+      for n = s.low, s.high - 1 do g.rows[#g.rows + 1] = n + 0.5 end
+      return g
+    end
+    g.root = {}
+    if s.pitch_quant then g.scale = {} end
+    for n = s.low, s.high do
+      if (n - s.root) % 12 == 0 then g.root[#g.root + 1] = n end
+      if g.scale and model.snap_to_scale(n, s.root, s.scale) == n then g.scale[#g.scale + 1] = n end
+    end
+    return g
+  end
+
   -- What Screen.draw takes. ctx: bpb, hover, tip, blink, stroke (the capture in progress, ts_draw's cap).
   function self.view(ctx)
     local cur = set()
@@ -307,6 +348,8 @@ function Ui.new(opts)
       span = span,
       stroke_space = ctx.stroke and { loop_beats = ctx.stroke.loop_beats, bottom = ctx.stroke.bottom, top = ctx.stroke.top,
         pad = ctx.stroke.pad } or nil,
+      guides = guides(shown),
+      readout = (ctx.tip or ctx.hover) and readout(shown, ctx.tip or ctx.hover) or nil,
       lines = self.info_lines(shown),
       line = self.line(),
       dots = { selected = cur.selected or #cur.sequences + 1, states = states },

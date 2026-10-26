@@ -11,6 +11,8 @@
 --   span   = {bottom, top, pad}: the pitches at the canvas's edges (Model.canvas_span), default seq.low..high,
 --   stroke = the points {beat, note, pressure} of the stroke being drawn on seq, or nil,
 --   hover  = {x, y} and tip = {x, y}, fractions of the canvas, or nil,
+--   guides = {rows, root, scale}: pitches of faint dotted lines (ts_ui), or nil,
+--   readout = what is under the pen, instead of the lines: {lines = {...}} or {big = "E4"}, or nil,
 --   lines  = {{label, value}, ...}, line = the index E2 has selected,
 --   dots   = { selected = index, states = {state, ...} },
 --   blink  = true on the bright half of the waiting blink,
@@ -34,6 +36,29 @@ local function waiting(state) return state == "starting" or state == "stopping" 
 -- Model.canvas_span). Padded spans (row voices) use the full height, so a row's centre is its centre.
 local function pitch_y(space, note)
   return (space.top - note) / (space.top - space.bottom) * (space.pad and H or H - 1)
+end
+
+-- Dotted lines (every other pixel) at the given pitches, one level, queued and filled once.
+local function dotted(s, span, pitches, level)
+  s.level(level)
+  for _, p in ipairs(pitches) do
+    local y = math.max(0, math.min(H - 1, round(pitch_y(span, p))))
+    for x = 0, W - 1, 2 do s.pixel(x, y) end
+  end
+  s.fill()
+end
+
+-- Row boundaries; the root notes; and, when neighbours are at least 3 px apart, the scale notes (dimmer).
+local function guide_lines(s, g, span)
+  if g.rows and #g.rows > 0 then dotted(s, span, g.rows, 2) end
+  if g.scale and #g.scale > 1 then
+    local roomy = true
+    for i = 2, #g.scale do
+      if pitch_y(span, g.scale[i - 1]) - pitch_y(span, g.scale[i]) < 3 then roomy = false; break end
+    end
+    if roomy then dotted(s, span, g.scale, 1) end
+  end
+  if g.root and #g.root > 0 then dotted(s, span, g.root, 2) end
 end
 
 local function strokes(s, seq, loop_beats, span)
@@ -115,6 +140,7 @@ local function canvas(s, view)
     s.stroke()
   end
   local span = view.span or { bottom = seq.low, top = seq.high }
+  if view.guides then guide_lines(s, view.guides, span) end
   strokes(s, seq, loop_beats, span)
   if view.stroke then
     live_stroke(s, view.stroke_space or { loop_beats = loop_beats, bottom = span.bottom, top = span.top, pad = span.pad },
@@ -150,7 +176,27 @@ local function canvas(s, view)
   end
 end
 
+-- What is under the pen, in place of the settings.
+local function readout(s, r)
+  if r.big then
+    s.font_face(1)
+    s.font_size(16)
+    s.level(15)
+    s.move((COL + 127) / 2, 36)
+    s.text_center(r.big)
+    return
+  end
+  s.font_face(1)
+  s.font_size(8)
+  for i, text in ipairs(r.lines) do
+    s.level(i == 1 and 15 or 6)
+    s.move(COL, ROW0 + (i - 1) * ROW)
+    s.text(text)
+  end
+end
+
 local function info(s, view)
+  if view.readout then return readout(s, view.readout) end
   local lines = view.lines
   local first = 1
   if view.line > VISIBLE then first = view.line - VISIBLE + 1 end
