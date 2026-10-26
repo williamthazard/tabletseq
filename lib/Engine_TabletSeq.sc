@@ -2,8 +2,8 @@
 // effects they send to (reverb, delay and Carter's delay, ported from just draw for norns).
 // The only SuperCollider class in the script; the SynthDefs live in ts_sine.scd, ts_oneshot.scd,
 // ts_fx.scd and ts_grains.scd.
-// Node order: the sequence groups, the delay, Carter's delay (when it is on), the reverb, then the output
-// stage (\ts_out: engine level and a -1 dBFS limiter) at the tail.
+// Node order: the sequence groups, the delay, Carter's pointer and grains (when it is on), the reverb, Carter's
+// feedback patch and recorder, then the output stage (\ts_out: engine level and a -1 dBFS limiter) at the tail.
 // Every note starts in its sequence's group (1-16), so level and sends act live on the sounding notes.
 Engine_TabletSeq : CroneEngine {
 	var master, groups, levels, sends, buffers, decodeEnv;
@@ -49,13 +49,14 @@ Engine_TabletSeq : CroneEngine {
 		this.initGrains;
 		// A bus written by a node that runs after its reader is lost for that cycle (In.ar hears silence), so
 		// the reverb runs after everything that writes its bus: the sequence groups (their sends), the delay and
-		// Carter's grains. The delay has a group of its own, and Carter's groups are made with
-		// Group.after(delayGroup), which puts them between delayGroup and reverbGroup.
+		// Carter's grains. The delay has a group of its own, and Carter's pointer and grains are made with
+		// Group.after(delayGroup), which puts them between delayGroup and reverbGroup. Its feedback patch and
+		// recorder go the other way, after the reverb, so the feedback hears it.
 		delayGroup = Group.after(master);
 		delay = Synth.new(\ts_delay, [\in, delayBus, \out, context.out_b, \reverbOut, reverbBus], delayGroup);
 		reverbGroup = Group.after(delayGroup);
 		reverb = Synth.new(\ts_reverb, [\in, reverbBus, \out, context.out_b], reverbGroup);
-		// The output stage runs last of all.
+		// The output stage runs last of all; Carter's feedback groups (Group.after(reverbGroup)) sit before it.
 		outGroup = Group.after(reverbGroup);
 		outStage = Synth.new(\ts_out, [\out, context.out_b, \level, outLevel], outGroup);
 
@@ -232,19 +233,23 @@ Engine_TabletSeq : CroneEngine {
 			if(gen != grainsGen) {
 				grainBuf.free; grainEnvBufs.do(_.free); grainPtrBus.free;
 			} {
-				// ptr and the feedback patch, rec, then the grains run after delayGroup, after every note has
-				// written grainsBus and before the reverb reads what the grains send it.
-				grainGroups = Array.newClear(3);
+				// The pointer and the grains run after delayGroup, after every note has written grainsBus and
+				// before the reverb reads what the grains send it. The feedback patch and the recorder run after
+				// reverbGroup, so the feedback hears the reverb on the main bus, and fbmix runs ahead of rec,
+				// which reads the bus fbmix writes. The grains read the buffer far behind the pointer, so rec
+				// running after them costs nothing. Each is in a group of its own to fix the order.
+				grainGroups = Array.newClear(4);
 				grainGroups[0] = Group.after(delayGroup);
 				grainGroups[1] = Group.after(grainGroups[0]);
-				grainGroups[2] = Group.after(grainGroups[1]);
+				grainGroups[2] = Group.after(reverbGroup);
+				grainGroups[3] = Group.after(grainGroups[2]);
 				grainPtr = Synth(\ts_ptr, [\buf, grainBuf, \out, grainPtrBus,
 					\rate, if(grainSet[\freeze] > 0) { 0 } { 1 }], grainGroups[0]);
 				grainFb = Synth(\ts_fbmix, [\in, context.out_b, \out, grainsBus, \amp, grainSet[\fbAmp],
 					\balance, grainSet[\fbBalance], \hpFreq, grainSet[\fbHpf], \noiseLevel, grainSet[\fbNoise],
-					\sineLevel, grainSet[\fbSineLevel], \sineHz, grainSet[\fbSineHz]], grainGroups[0]);
+					\sineLevel, grainSet[\fbSineLevel], \sineHz, grainSet[\fbSineHz]], grainGroups[2]);
 				grainRec = Synth(\ts_rec, [\ptrIn, grainPtrBus, \micIn, grainsBus, \buf, grainBuf,
-					\preLevel, grainSet[\recPre]], grainGroups[1]);
+					\preLevel, grainSet[\recPre]], grainGroups[3]);
 				if(grainSet[\freeze] > 0) { grainRec.run(false) };
 				rates = this.grainTapRates;
 				grainDurs = grainCount.collect({ |i| grainBeatSec * (i + 1) }).scramble;
@@ -262,7 +267,7 @@ Engine_TabletSeq : CroneEngine {
 						\minPtrDelay, grainDelays[n], \cutoffMax, grainSet[\ceiling], \beatSec, grainBeatSec,
 						\panRate, grainRates[\panRate][n], \cutoffRate, grainRates[\cutoffRate][n],
 						\resRate, grainRates[\resRate][n]
-					], grainGroups[2]);
+					], grainGroups[1]);
 				};
 				grainsLive = true;
 			};
