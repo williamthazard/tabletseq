@@ -1,7 +1,7 @@
 -- The MIDI voices: the synth and the drum kit, played from the MIDI plan (a port of the Mac's lib/midi.scd).
 -- `dev` returns the norns midi device (colon methods: note_on, note_off, pitchbend, channel_pressure, cc)
 -- or nil; it is called on every send, so a device change is picked up. `clock` is norns's clock
--- (run, sleep, cancel, get_beats, get_beat_sec). Both are passed in. No norns globals; Lua 5.3 compatible.
+-- (run, sleep, get_beats, get_beat_sec). Both are passed in. No norns globals; Lua 5.3 compatible.
 -- Channels are 1-16. A kit hit is a plan note with its fixed hit length as `dur` and no bends.
 local Common = include 'lib/ts_voice_common'
 local MidiVoice = {}
@@ -11,8 +11,8 @@ local CENTRE = 8192
 function MidiVoice.new(opts)
   local dev, clock = opts.dev, opts.clock
   local v = {}
+  local sched = Common.scheduler(clock)
   local sounding = {} -- sequence index -> list of { chan, note, alive }
-  local waiting = {}  -- sequence index -> { [job] = true } of notes not yet finished
   local used = {}     -- channels that have sent anything
   local bend_of = {}  -- channel -> the last bend sent
 
@@ -43,14 +43,12 @@ function MidiVoice.new(opts)
     end
   end
 
-  local function sleep_until(beat) Common.sleep_until(clock, beat) end
-
   -- note-on at beat `at`, then the plan's bends and pressures at their beats, then the note-off.
   -- A note still sounding at this pitch ends first (its own note-off is then dropped). A note
   -- without bends starts from a centred bend if a finished glide left the channel bent, unless it
   -- joins notes still sounding there; notes with the same bends send each step once (chords).
-  local function run_note(i, note, at, chan)
-    sleep_until(at)
+  local function run_note(i, note, at, chan, wait)
+    if not wait(at) then return end
     if note.vel <= 0 then return end
     for _, list in pairs(sounding) do
       for _, e in ipairs(list) do
@@ -93,34 +91,20 @@ function MidiVoice.new(opts)
     play_steps_due(0)
     send("note_on", note.note, note.vel, chan)
     while steps[n] do
-      sleep_until(at + steps[n][1])
-      if not entry.alive then return end
+      if not wait(at + steps[n][1]) or not entry.alive then return end
       play_steps_due(steps[n][1])
     end
-    sleep_until(at + note.dur)
+    if not wait(at + note.dur) then return end
     end_entry(entry)
   end
 
   function v.play(seq_index, note, at, channel)
     if note.kind ~= "midi" then return end
-    local job = {}
-    waiting[seq_index] = waiting[seq_index] or {}
-    local jobs = waiting[seq_index]
-    job.id = clock.run(function()
-      run_note(seq_index, note, at, channel)
-      job.done = true
-      jobs[job] = nil
-    end)
-    if not job.done then jobs[job] = true end
-  end
-
-  local function cancel(i)
-    for job in pairs(waiting[i] or {}) do clock.cancel(job.id) end
-    waiting[i] = nil
+    sched.spawn(seq_index, function(wait) run_note(seq_index, note, at, channel, wait) end)
   end
 
   function v.release_seq(i)
-    cancel(i)
+    sched.cancel(i)
     local mine = sounding[i] or {}
     sounding[i] = nil
     local chans = {}
@@ -135,7 +119,7 @@ function MidiVoice.new(opts)
   end
 
   function v.release_all()
-    for i in pairs(waiting) do cancel(i) end
+    sched.cancel_all()
     local order = {}
     for i in pairs(sounding) do order[#order + 1] = i end
     table.sort(order)

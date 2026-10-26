@@ -1,7 +1,7 @@
 -- The Just Friends and w/syn voices, over crow's ii bus, played from the MIDI plan.
 -- `ii` is a function returning crow.ii.jf / crow.ii.wsyn; it is called on every send, never cached
 -- (a cached crowSub breaks). `connected` says whether a crow is plugged in; `clock` is norns's clock
--- (run, sleep, cancel, get_beats, get_beat_sec); `settings` is the live settings table the params edit
+-- (run, sleep, get_beats, get_beat_sec); `settings` is the live settings table the params edit
 -- (JF: mode; w/syn: voices, lpg_time, lpg_symmetry, fm_env, hold). All are passed in.
 -- One voice per module, shared by every sequence: JF's six channels and w/syn's voices rotate globally,
 -- and a stolen one is released first. Module settings are sent by apply_settings only; first_use also
@@ -60,8 +60,8 @@ function IiVoice.Jf(opts)
   end)
   local release = pool.release
 
-  local function run_note(i, note, at, seq)
-    sched.sleep_until(at)
+  local function run_note(i, note, at, seq, wait)
+    if not wait(at) then return end
     if note.vel <= 0 or not connected() then return end
     local range = seq and seq.bend_range or 24
     local function pitch_of(bend) return pitch_volts(note.note + (bend - 8192) / 8192 * range) end
@@ -74,18 +74,17 @@ function IiVoice.Jf(opts)
     send("pitch", e.pitch, function() end) -- play_voice carries the pitch
     ii().play_voice(e.chan, e.pitch, level_volts(note.vel / 127))
     for _, s in ipairs(steps) do
-      sched.sleep_until(at + s[1])
-      if not e.alive then return end
+      if not wait(at + s[1]) or not e.alive then return end
       e.pitch = pitch_of(s[3])
       if connected() then send("pitch", e.pitch, function(volts) ii().pitch(e.chan, volts) end) end
     end
-    sched.sleep_until(at + note.dur)
+    if not wait(at + note.dur) then return end
     release(e)
   end
 
   function v.play(i, note, at, seq)
     if note.kind ~= "midi" then return end
-    sched.spawn(i, function() run_note(i, note, at, seq) end)
+    sched.spawn(i, function(wait) run_note(i, note, at, seq, wait) end)
   end
 
   function v.release_seq(i) pool.release_seq(i, sched) end
@@ -124,8 +123,8 @@ function IiVoice.Wsyn(opts)
   end)
   local release = pool.release
 
-  local function run_note(i, note, at, seq)
-    sched.sleep_until(at)
+  local function run_note(i, note, at, seq, wait)
+    if not wait(at) then return end
     if note.vel <= 0 or not connected() then return end
     local range = seq and seq.bend_range or 24
     local level = seq and seq.level or 1
@@ -141,8 +140,7 @@ function IiVoice.Wsyn(opts)
     send("pitch", volts, function() end) -- play_voice carries the pitch and the velocity
     ii().play_voice(e.voice, volts, level_volts(note.vel / 127))
     for _, s in ipairs(steps) do
-      sched.sleep_until(at + s[1])
-      if not e.alive then return end
+      if not wait(at + s[1]) or not e.alive then return end
       if connected() then
         if s[2] == 1 then
           send("pitch", pitch_of(s[3]), function(p) ii().pitch(e.voice, p) end)
@@ -151,13 +149,13 @@ function IiVoice.Wsyn(opts)
         end
       end
     end
-    sched.sleep_until(at + note.dur)
+    if not wait(at + note.dur) then return end
     release(e)
   end
 
   function v.play(i, note, at, seq)
     if note.kind ~= "midi" then return end
-    sched.spawn(i, function() run_note(i, note, at, seq) end)
+    sched.spawn(i, function(wait) run_note(i, note, at, seq, wait) end)
   end
 
   function v.release_seq(i) pool.release_seq(i, sched) end

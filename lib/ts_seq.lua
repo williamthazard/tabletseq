@@ -7,6 +7,9 @@
 -- the voices wait for each note's beat in short sleeps, so a tempo change moves nothing off its beat.
 -- A wake that is merely late (the main thread was busy) is no jump: the beats it advanced match the
 -- wall time that passed. Notes that fell due during the stall and are over a STALE are skipped.
+-- A routine is never clock.cancel'ed (a wake matron has already queued for it would then resume a
+-- coroutine that is gone): stopping flags it, and it returns at its next wake, at most a bar away
+-- while it waits to start and STEP beats away while it plays.
 local Seq = {}
 
 local EPS = 1e-9
@@ -23,7 +26,7 @@ local BACK = 0.01
 -- a note this far past its start when a late wake finds it is skipped
 local STALE = 0.25
 
--- clock: run(fn), sync(beats), cancel(id), get_beats(); model: ts_model; router: play(seq, note, at),
+-- clock: run(fn), sync(beats), get_beats(); model: ts_model; router: play(seq, note, at),
 -- release_seq(seq); bpb: fn() -> beats per bar; now_beats: fn() -> the clock's beat (default clock.get_beats);
 -- now_secs: fn() -> wall-clock seconds, optional (without it a wake more than JUMP beats on is a jump);
 -- beat_sec: fn() -> seconds per beat (default clock.get_beat_sec)
@@ -34,7 +37,7 @@ function Seq.new(opts)
   local now_secs = opts.now_secs
   local beat_sec = opts.beat_sec or clock.get_beat_sec
   local skipped = 0
-  local entries = {} -- seq -> { state, id, pass_start, pass_beats, plan }
+  local entries = {} -- seq -> { state, pass_start, pass_beats, plan }
   local self = {}
 
   -- one pass of the loop; the plan is kept until the sequence changes
@@ -57,6 +60,12 @@ function Seq.new(opts)
     return at < prev - BACK or at - prev - explained > JUMP
   end
 
+  -- stops the routine without a clock.cancel: it sees the flag when it next wakes
+  local function cancel(seq, e)
+    e.cancelled = true
+    entries[seq] = nil
+  end
+
   local function finish(seq)
     entries[seq] = nil
     router.release_seq(seq)
@@ -67,6 +76,7 @@ function Seq.new(opts)
       local on_bar = false -- a jump landed on a bar line: it is the start of the pass already
       while true do
         if not on_bar then clock.sync(bpb()) end
+        if e.cancelled then return end
         on_bar = false
         if e.state == "stopping" then finish(seq); return end
         local bar = bar_now() -- the start of the pass
@@ -95,6 +105,7 @@ function Seq.new(opts)
         while true do
           hand_out(prev + LOOKAHEAD) -- what starts within LOOKAHEAD of this wake
           clock.sync(STEP)
+          if e.cancelled then return end
           local at, secs = now_beats(), now_secs and now_secs()
           if jumped(at, secs, prev, prev_secs) then
             -- the beat counter jumped: what is still waiting is on the old timeline, so it goes
@@ -131,10 +142,9 @@ function Seq.new(opts)
     if not e then
       e = { state = "starting" }
       entries[seq] = e
-      e.id = clock.run(play_routine(seq, e))
+      clock.run(play_routine(seq, e))
     elseif e.state == "starting" then
-      clock.cancel(e.id)
-      entries[seq] = nil
+      cancel(seq, e)
     elseif e.state == "playing" then
       e.state = "stopping"
     else -- stopping: keep playing
@@ -151,10 +161,7 @@ function Seq.new(opts)
 
   function self.stop_now(seq)
     local e = entries[seq]
-    if e then
-      clock.cancel(e.id)
-      entries[seq] = nil
-    end
+    if e then cancel(seq, e) end
     router.release_seq(seq)
   end
 

@@ -11,27 +11,33 @@ Common.CHUNK = 0.25
 -- Waits until the clock reaches the absolute `beat`. norns's clock.sleep takes SECONDS, so a single
 -- long sleep would keep its wall-clock time through a tempo change (an edit, a Link peer, an external
 -- clock) and wake at the wrong beat. The wait is therefore taken in short stretches, each worked out
--- from the clock's beat and tempo as they are then.
-function Common.sleep_until(clock, beat)
+-- from the clock's beat and tempo as they are then. Returns false, at the first wake that sees it,
+-- when `job` has been cancelled (see scheduler): the caller then returns at once.
+function Common.sleep_until(clock, beat, job)
   while true do
+    if job and job.cancelled then return false end
     local rest = beat - clock.get_beats()
-    if rest <= Common.EPS then return end
+    if rest <= Common.EPS then return true end
     clock.sleep(math.min(rest, Common.CHUNK) * clock.get_beat_sec())
   end
 end
 
--- Scheduling on `clock` (run, sleep, cancel, get_beats, get_beat_sec); jobs are tracked per sequence.
+-- Scheduling on `clock` (run, sleep, get_beats, get_beat_sec); jobs are tracked per sequence. A job is
+-- never clock.cancel'ed: norns's clock.cancel forgets the coroutine, but a wake matron has already
+-- queued for it still arrives, and clock.resume then fails on the missing thread. Cancelling sets a
+-- flag instead; the job sees it at its next wake (within CHUNK beats) and returns, holding its clock
+-- slot until then. spawn(i, fn) calls fn(wait), where wait(beat) sleeps until the beat and returns
+-- false when the job was cancelled: `if not wait(at) then return end`.
 function Common.scheduler(clock)
   local s = { waiting = {} }
-
-  function s.sleep_until(beat) Common.sleep_until(clock, beat) end
 
   function s.spawn(i, fn)
     local job = {}
     s.waiting[i] = s.waiting[i] or {}
     local jobs = s.waiting[i]
-    job.id = clock.run(function()
-      fn()
+    local function wait(beat) return Common.sleep_until(clock, beat, job) end
+    clock.run(function()
+      fn(wait)
       job.done = true
       jobs[job] = nil
     end)
@@ -39,7 +45,7 @@ function Common.scheduler(clock)
   end
 
   function s.cancel(i)
-    for job in pairs(s.waiting[i] or {}) do clock.cancel(job.id) end
+    for job in pairs(s.waiting[i] or {}) do job.cancelled = true end
     s.waiting[i] = nil
   end
 

@@ -1,6 +1,6 @@
 -- The engine voice: the sine and the drum rack's one-shots, played by Engine_TabletSeq.
 -- `engine` is norns's engine table (plain functions, called with a dot); `clock` is norns's clock
--- (run, sleep, cancel, get_beats, get_beat_sec). Both are passed in. No norns globals; Lua 5.3 compatible.
+-- (run, sleep, get_beats, get_beat_sec). Both are passed in. No norns globals; Lua 5.3 compatible.
 local Common = include 'lib/ts_voice_common'
 local EngineVoice = {}
 
@@ -34,25 +34,14 @@ end
 
 function EngineVoice.new(engine, clock)
   local v = {}
-  local pending = {} -- sequence index -> { [routine id] = true } of notes waiting for their beat
-
-  local function cancel(i)
-    for id in pairs(pending[i] or {}) do clock.cancel(id) end
-    pending[i] = nil
-  end
+  local sched = Common.scheduler(clock)
 
   -- Runs fn at the absolute clock beat `at`, or at once when that has come.
   local function at_beat(i, at, fn)
     if at <= clock.get_beats() + 1e-9 then fn(); return end
-    pending[i] = pending[i] or {}
-    local waiting = pending[i]
-    local id
-    id = clock.run(function()
-      Common.sleep_until(clock, at)
-      waiting[id] = nil
-      fn()
+    sched.spawn(i, function(wait)
+      if wait(at) then fn() end
     end)
-    waiting[id] = true
   end
 
   function v.play(seq_index, note, at)
@@ -67,12 +56,12 @@ function EngineVoice.new(engine, clock)
   end
 
   function v.release_seq(i)
-    cancel(i)
+    sched.cancel(i)
     engine.seq_release(i)
   end
 
   function v.release_all()
-    for i in pairs(pending) do cancel(i) end
+    sched.cancel_all()
     engine.release_all()
   end
 
