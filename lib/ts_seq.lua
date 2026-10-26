@@ -1,11 +1,20 @@
 -- The sequencer: one routine per sequence on the norns clock. A sequence starts and stops on the
--- bar line; each pass hands its notes to the router with their absolute beats. A change to a
--- playing sequence is planned from its next pass. The bar line is re-read from the clock at every
--- sync, so a beat counter that restarts or jumps starts the pass afresh on the new bar line; the
--- voices wait for each note's beat in short sleeps, so a tempo change moves nothing off its beat.
+-- bar line. The routine wakes every STEP beats and hands the router each note of the pass LOOKAHEAD
+-- beats before it starts, with its absolute beat, so only the notes about to sound hold a clock
+-- coroutine (norns has 100 slots for them, shared by the whole script): a pass is never handed out
+-- whole. A change to a playing sequence is planned from its next pass. The clock's beat is re-read at
+-- every wake, so a beat counter that restarts or jumps starts the pass afresh on the next bar line;
+-- the voices wait for each note's beat in short sleeps, so a tempo change moves nothing off its beat.
 local Seq = {}
 
 local EPS = 1e-9
+
+-- how far ahead of a note's start it goes to the router, and how often the routine wakes to hand
+-- notes out (the notes about to sound are then 0.125 to 0.25 beats early, never late)
+local LOOKAHEAD = 0.25
+local STEP = 0.125
+-- a wake further than this many beats from the last one, or before it, is a jump of the beat counter
+local JUMP = 1
 
 -- clock: run(fn), sync(beats), cancel(id), get_beats(); model: ts_model; router: play(seq, note, at),
 -- release_seq(seq); bpb: fn() -> beats per bar; now_beats: fn() -> the clock's beat (default clock.get_beats)
@@ -22,43 +31,58 @@ function Seq.new(opts)
     return e.plan
   end
 
-  -- the bar line nearest the clock's beat: re-read after every sync, because the beat counter can
+  -- the bar line nearest the clock's beat: only used after a sync(bpb), because the beat counter can
   -- restart or jump (a clock reset, a MIDI Start, a Link session merge) and a counted bar would be stale
   local function bar_now()
     local n = bpb()
     return math.floor(now_beats() / n + 0.5) * n
   end
 
+  local function finish(seq)
+    entries[seq] = nil
+    router.release_seq(seq)
+  end
+
   local function play_routine(seq, e)
     return function()
-      clock.sync(bpb())
-      local bar = bar_now()
-      e.state = "playing"
       while true do
-        e.pass_start = bar
-        e.pass_beats = model.loop_beats(seq, bpb())
-        for _, note in ipairs(pass_notes(seq, e)) do
-          router.play(seq, note, bar + note.start)
+        clock.sync(bpb())
+        if e.state == "stopping" then finish(seq); return end
+        local bar = bar_now() -- the start of the pass
+        e.state = "playing"
+        local line = bar      -- the last bar line reached
+        local prev = bar      -- the beat of the last wake
+        local plan, i
+        local function new_pass()
+          e.pass_start = bar
+          e.pass_beats = model.loop_beats(seq, bpb())
+          plan, i = pass_notes(seq, e), 1
         end
-        local elapsed = 0 -- beats of this pass gone by, counted in whole bars
-        repeat
-          clock.sync(bpb())
-          local at = bar_now()
-          if e.state == "stopping" then
-            entries[seq] = nil
-            router.release_seq(seq)
-            return
+        new_pass()
+        while true do
+          -- hand out what starts within LOOKAHEAD of this wake
+          while plan[i] and bar + plan[i].start <= prev + LOOKAHEAD + EPS do
+            router.play(seq, plan[i], bar + plan[i].start)
+            i = i + 1
           end
-          if math.abs(at - (bar + bpb())) > EPS then
+          clock.sync(STEP)
+          local at = now_beats()
+          if at < prev - EPS or at - prev > JUMP then
             -- the beat counter jumped: what is still waiting is on the old timeline, so it goes
-            -- and the pass is handed out again from the new bar line
+            -- and the pass is handed out again from the next bar line
             router.release_seq(seq)
-            bar = at
             break
           end
-          bar = at
-          elapsed = elapsed + bpb()
-        until elapsed >= e.pass_beats - EPS
+          prev = at
+          if at >= line + bpb() - EPS then
+            if e.state == "stopping" then finish(seq); return end
+            line = line + bpb()
+            if line - bar >= e.pass_beats - EPS then
+              bar = line
+              new_pass()
+            end
+          end
+        end
       end
     end
   end
