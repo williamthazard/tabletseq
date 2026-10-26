@@ -61,8 +61,8 @@ function Params.add(p, deps)
   end
 
   -- The engine's output level, ahead of its -1 dBFS limiter. Saved in PSETs.
-  p:add_control("engine_level", "engine level", controlspec.new(-60, 6, "lin", 0, -10, "dB"))
-  p:set_action("engine_level", function(db) engine.set_out_level(10 ^ (db / 20)) end)
+  p:add_control("ts_engine_level", "engine level", controlspec.new(-60, 6, "lin", 0, -10, "dB"))
+  p:set_action("ts_engine_level", function(db) engine.set_out_level(10 ^ (db / 20)) end)
 
   p:add_separator("ts_midi", "MIDI")
   p:add_number("midi_device", "device", 1, 16, 1, function(param)
