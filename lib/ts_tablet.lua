@@ -1,11 +1,14 @@
 -- Tablet reader: raw Linux HID events (type, code, value) from a Wacom One become pen events.
--- No norns globals; Lua 5.3 compatible. The caller passes emit and schedule.
+-- No norns globals; Lua 5.3 compatible. The caller passes emit, schedule and now.
 local Tablet = {}
 Tablet.__index = Tablet
 
 -- Which pen button is which. Swap here if the user's reading says the other way round.
 local UPPER = 0x14c   -- BTN_STYLUS2
 local LOWER = 0x14b   -- BTN_STYLUS
+
+-- A pen in range but not touching that sends nothing for this long (seconds) has been put down.
+local IDLE = 1.0
 
 local EV_KEY, EV_ABS = 1, 3
 local BTN_TOOL_PEN, BTN_TOUCH = 0x140, 0x14a
@@ -26,6 +29,8 @@ function Tablet.new(o)
   local self = setmetatable({}, Tablet)
   self.emit = o.emit
   self.schedule = o.schedule
+  self.now = o.now
+  self.last_event = nil    -- time of the last raw event
   self.flip = o.flip and true or false
   self.max = MODELS["CTL-472"]
   -- pending state, updated by every event
@@ -89,6 +94,7 @@ function Tablet:set_model(name)
 end
 
 function Tablet:event(type_, code, value)
+  if self.now then self.last_event = self.now() end
   if type_ == EV_KEY then
     if code == BTN_TOOL_PEN then self.tool = value ~= 0
     elseif code == BTN_TOUCH then self.touch = value ~= 0
@@ -164,6 +170,17 @@ function Tablet:flush()
   self.was_touch, self.was_tool = self.touch, self.tool
   if up_edge then self.emit("octaveUp", {}) end
   if low_edge then self.emit("octaveDown", {}) end
+end
+
+-- A pen lying on the table goes silent, and the BTN_TOOL_PEN = 0 that says it left is sometimes never
+-- sent. A pen in range and up with no event for IDLE seconds is out of range: hoverOff once, and forget
+-- the hover position so the next event hovers again. The tool state stays, since BTN_TOOL_PEN = 1 comes
+-- only on re-entering proximity. A touching tip never times out.
+function Tablet:check_idle(t)
+  if self.tool and not self.touch and self.hx and self.last_event and t - self.last_event >= IDLE then
+    self.hx, self.hy = nil, nil
+    self.emit("hoverOff", {})
+  end
 end
 
 -- The device was unplugged: leave range at once.

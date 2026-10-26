@@ -184,6 +184,7 @@ function init()
 
   tablet = Tablet.new{
     emit = function(evt, d) draw.pen(evt, d); dirty = true end,
+    now = now,
     schedule = function(f, secs)
       pending = f
       sched_metro:start(secs, 1)
@@ -256,6 +257,7 @@ function init()
   redraw_metro = metro.init()
   redraw_metro.time = 1 / FPS
   redraw_metro.event = function()
+    tablet:check_idle(now())   -- a silent pen that is up has left range (emit marks the screen dirty)
     if notice and now() >= notice["until"] then notice = nil; dirty = true end
     if now() >= poll_at then
       poll_at = now() + TEMPO_POLL
