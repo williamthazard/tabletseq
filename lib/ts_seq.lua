@@ -6,7 +6,8 @@
 -- every wake, so a beat counter that restarts or jumps starts the pass afresh on the next bar line;
 -- the voices wait for each note's beat in short sleeps, so a tempo change moves nothing off its beat.
 -- A wake that is merely late (the main thread was busy) is no jump: the beats it advanced match the
--- wall time that passed. Notes that fell due during the stall and are over a STALE are skipped.
+-- wall time that passed. Notes that fell due during the stall and are over, a STALE past their
+-- start, are skipped; one that would still be sounding plays late.
 -- A routine is never clock.cancel'ed (a wake matron has already queued for it would then resume a
 -- coroutine that is gone): stopping flags it, and it returns at its next wake, at most a bar away
 -- while it waits to start and STEP beats away while it plays.
@@ -82,7 +83,8 @@ function Seq.new(opts)
         local bar = bar_now() -- the start of the pass
         e.state = "playing"
         local line = bar      -- the last bar line reached
-        local prev = bar      -- the beat of the last wake
+        -- the beat of the last wake: read with its seconds, so a late first wake is no jump
+        local prev = now_secs and math.max(bar, now_beats()) or bar
         local prev_secs = now_secs and now_secs()
         local plan, i
         local function new_pass()
@@ -91,10 +93,12 @@ function Seq.new(opts)
           plan, i = pass_notes(seq, e), 1
         end
         new_pass()
-        -- hand out what starts by `limit`; a note already STALE past its start (a late wake) is skipped
+        -- hand out what starts by `limit`; a note STALE past its start and wholly over (a late wake)
+        -- is skipped, one that would still be sounding plays late
         local function hand_out(limit)
           while plan[i] and bar + plan[i].start <= limit + EPS do
-            if now_secs and bar + plan[i].start < prev - STALE then
+            if now_secs and bar + plan[i].start < prev - STALE
+                and bar + plan[i].start + (plan[i].dur or 0) < prev then
               skipped = skipped + 1
             else
               router.play(seq, plan[i], bar + plan[i].start)
