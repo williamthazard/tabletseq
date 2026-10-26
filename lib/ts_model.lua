@@ -106,6 +106,15 @@ function M.loop_beats(seq, bpb)
   return seq.bars * bpb
 end
 
+-- The pitches at the bottom and top of the drawing canvas, and whether they are padded. Pitched voices
+-- span low..high. Row voices (the kit, the drum rack) make every integer note a row, so they span
+-- low - 0.5 .. high + 0.5 and every row, the edge ones included, gets the same height.
+function M.canvas_span(seq, voice, low, high)
+  voice, low, high = voice or seq.voice, low or seq.low, high or seq.high
+  if M.plays_hits(voice) then return low - 0.5, high + 0.5, true end
+  return low, high, false
+end
+
 -- The voice's default range is applied while the range is still the old voice's default (or there are
 -- no strokes). Strokes drawn on the old range are rescaled so the drawing keeps its place on screen.
 function M.set_voice(seq, voice)
@@ -115,10 +124,12 @@ function M.set_voice(seq, voice)
     if #seq.strokes == 0 then
       seq.low, seq.high = r[1], r[2]
     elseif old and seq.low == old[1] and seq.high == old[2] and (r[1] ~= old[1] or r[2] ~= old[2]) then
-      local span = old[2] - old[1]
+      -- the drawing keeps its place on the canvas, whichever spans the two voices use
+      local ob, ot = M.canvas_span(seq, seq.voice, old[1], old[2])
+      local nb, nt = M.canvas_span(seq, voice, r[1], r[2])
       for _, stroke in ipairs(seq.strokes) do
         for _, p in ipairs(stroke.points) do
-          p[2] = r[1] + (p[2] - old[1]) / span * (r[2] - r[1])
+          p[2] = nt - (ot - p[2]) / (ot - ob) * (nt - nb)
         end
       end
       seq.low, seq.high = r[1], r[2]
@@ -239,12 +250,13 @@ end
 function M.begin_stroke(seq, bpb, x, y, p)
   local loop_beats = M.loop_beats(seq, bpb)
   local low, high = seq.low, seq.high
+  local bottom, top, pad = M.canvas_span(seq)
   local cx = clip(x, 0, 1 - 1e-6)
   local cy = clip(y, 0, 1)
   local cp = clip(p, 0, 1)
-  local point = { cx * loop_beats, high - cy * (high - low), cp }
+  local point = { cx * loop_beats, top - cy * (top - bottom), cp }
   return {
-    seq = seq, loop_beats = loop_beats, low = low, high = high,
+    seq = seq, loop_beats = loop_beats, low = low, high = high, bottom = bottom, top = top, pad = pad,
     points = { point }, down = point, down_x = cx, down_y = cy, last_x = cx, last_y = cy,
     max_pressure = cp, max_dist = 0,
   }
@@ -259,7 +271,7 @@ function M.extend_stroke(cap, x, y, p)
   cap.max_pressure = math.max(cap.max_pressure, cp)
   cap.max_dist = math.max(cap.max_dist, from_down)
   if from_last >= M.MIN_POINT_DIST then
-    cap.points[#cap.points + 1] = { cx * cap.loop_beats, cap.high - cy * (cap.high - cap.low), cp }
+    cap.points[#cap.points + 1] = { cx * cap.loop_beats, cap.top - cy * (cap.top - cap.bottom), cp }
     cap.last_x, cap.last_y = cx, cy
   end
   return cap
@@ -271,15 +283,17 @@ end
 function M.fit_capture(cap, bpb)
   local seq = cap.seq
   local loop_beats = M.loop_beats(seq, bpb)
-  if loop_beats == cap.loop_beats and seq.low == cap.low and seq.high == cap.high then return cap end
+  local bottom, top, pad = M.canvas_span(seq)
+  if loop_beats == cap.loop_beats and bottom == cap.bottom and top == cap.top then return cap end
   local function fit(p)
     p[1] = p[1] / cap.loop_beats * loop_beats
-    p[2] = seq.high - (cap.high - p[2]) / (cap.high - cap.low) * (seq.high - seq.low)
+    p[2] = top - (cap.top - p[2]) / (cap.top - cap.bottom) * (top - bottom)
   end
   local seen = {}
   for _, p in ipairs(cap.points) do seen[p] = true; fit(p) end
   if not seen[cap.down] then fit(cap.down) end
   cap.loop_beats, cap.low, cap.high = loop_beats, seq.low, seq.high
+  cap.bottom, cap.top, cap.pad = bottom, top, pad
   return cap
 end
 

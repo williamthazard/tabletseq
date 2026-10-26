@@ -8,6 +8,7 @@
 --   bpb    = beats per bar (default 4),
 --   state  = "stopped" | "starting" | "playing" | "stopping",
 --   playhead = beat within the loop, or nil,
+--   span   = {bottom, top, pad}: the pitches at the canvas's edges (Model.canvas_span), default seq.low..high,
 --   stroke = the points {beat, note, pressure} of the stroke being drawn on seq, or nil,
 --   hover  = {x, y} and tip = {x, y}, fractions of the canvas, or nil,
 --   lines  = {{label, value}, ...}, line = the index E2 has selected,
@@ -29,10 +30,15 @@ local function px(v) return round(v) + 0.5 end
 
 local function waiting(state) return state == "starting" or state == "stopping" end
 
-local function strokes(s, seq, loop_beats)
-  local low, high = seq.low, seq.high
+-- A pitch's y on the canvas. space: {bottom, top, pad}, the pitches at the canvas's edges (see
+-- Model.canvas_span). Padded spans (row voices) use the full height, so a row's centre is its centre.
+local function pitch_y(space, note)
+  return (space.top - note) / (space.top - space.bottom) * (space.pad and H or H - 1)
+end
+
+local function strokes(s, seq, loop_beats, span)
   local function pos(p)
-    return p[1] / loop_beats * W, (high - p[2]) / (high - low) * (H - 1)
+    return p[1] / loop_beats * W, pitch_y(span, p[2])
   end
   s.line_width(1)
   for _, stroke in ipairs(seq.strokes) do
@@ -59,11 +65,12 @@ end
 
 -- The stroke being drawn, as a finished one is (unquantized: the pen's own path). Points less than a
 -- pixel from the last one drawn are skipped, so a long stroke stays cheap.
--- space: the loop length and range the points were captured in (they may differ from the sequence's now)
+-- space: the loop length and canvas span the points were captured in (they may differ from the
+-- sequence's now)
 local function live_stroke(s, space, pts)
-  local loop_beats, low, high = space.loop_beats, space.low, space.high
+  local loop_beats = space.loop_beats
   local function pos(p)
-    return p[1] / loop_beats * W, (high - p[2]) / (high - low) * (H - 1)
+    return p[1] / loop_beats * W, pitch_y(space, p[2])
   end
   s.line_width(1)
   if #pts == 1 then
@@ -107,9 +114,11 @@ local function canvas(s, view)
     s.line(x, H)
     s.stroke()
   end
-  strokes(s, seq, loop_beats)
+  local span = view.span or { bottom = seq.low, top = seq.high }
+  strokes(s, seq, loop_beats, span)
   if view.stroke then
-    live_stroke(s, view.stroke_space or { loop_beats = loop_beats, low = seq.low, high = seq.high }, view.stroke)
+    live_stroke(s, view.stroke_space or { loop_beats = loop_beats, bottom = span.bottom, top = span.top, pad = span.pad },
+      view.stroke)
   end
   if view.playhead then
     local x = px(view.playhead / loop_beats * W)

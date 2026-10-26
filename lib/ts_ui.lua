@@ -293,6 +293,8 @@ function Ui.new(opts)
     local shown = s or editable()
     local states = {}
     for i, q in ipairs(cur.sequences) do states[i] = seq.state(q) end
+    local bottom, top, pad = model.canvas_span(shown)
+    local span = { bottom = bottom, top = top, pad = pad }
     return {
       seq = shown,
       new = s == nil,
@@ -302,7 +304,9 @@ function Ui.new(opts)
       hover = ctx.hover, tip = ctx.tip, blink = ctx.blink,
       -- the stroke being drawn shows only on the sequence it is drawn on (E1 may have moved on)
       stroke = ctx.stroke and ctx.stroke.seq == shown and ctx.stroke.points or nil,
-      stroke_space = ctx.stroke and { loop_beats = ctx.stroke.loop_beats, low = ctx.stroke.low, high = ctx.stroke.high } or nil,
+      span = span,
+      stroke_space = ctx.stroke and { loop_beats = ctx.stroke.loop_beats, bottom = ctx.stroke.bottom, top = ctx.stroke.top,
+        pad = ctx.stroke.pad } or nil,
       lines = self.info_lines(shown),
       line = self.line(),
       dots = { selected = cur.selected or #cur.sequences + 1, states = states },
