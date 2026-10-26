@@ -1,6 +1,6 @@
--- The screen (spec 5.4): the canvas at the left, the info column at the right, the sequence dots
--- along the bottom. `s` is norns's screen (or a recorder), called with a dot. No norns globals;
--- Lua 5.3 compatible.
+-- The screen (spec 5.4): the canvas at the left, the info column at the right, the sequence ticks
+-- at the bottom of the info column. `s` is norns's screen (or a recorder), called with a dot. No norns
+-- globals; Lua 5.3 compatible.
 --
 -- view = {
 --   seq    = the selected sequence, or the draft on the blank page,
@@ -24,7 +24,7 @@ local W, H = 82, 64        -- the canvas
 local COL = 85             -- the info column starts here
 local ROW0, ROW = 8, 9     -- the first line's baseline and the line height
 local VISIBLE = 6          -- lines shown at once; the list scrolls to keep the selected line in view
-local DOT_Y, DOT_STEP = 60, 5
+local TICK_Y, TICK_SPAN = 60, 128 - COL   -- the tick indicator's top (it is 3 px tall) and width
 
 local function round(v) return math.floor(v + 0.5) end
 
@@ -219,17 +219,34 @@ local function info(s, view)
   end
 end
 
-local function dots(s, view)
+-- The sequence indicator: one tick per sequence along the bottom of the info column, in order. The
+-- ticks are 3 px wide with 1 px gaps while they fit, else narrower (never under 1 px); the selected
+-- one is taller. Rects at integer coordinates, filled once per level.
+local function ticks(s, view)
   local d = view.dots
   if not d or #d.states < 2 then return end
-  local x0 = (W - (#d.states - 1) * DOT_STEP) / 2
+  local n = #d.states
+  local w = 3
+  while w > 1 and n * w + (n - 1) > TICK_SPAN do w = w - 1 end
+  local x0 = COL + (TICK_SPAN - (n * w + (n - 1))) // 2
+  local levels = {}
   for i, state in ipairs(d.states) do
     local level = state == "playing" and 9 or 3
     if i == d.selected then level = 15 end
     if waiting(state) and not view.blink then level = 1 end
-    s.level(level)
-    s.circle(x0 + (i - 1) * DOT_STEP, DOT_Y, 1.5)
-    s.fill()
+    levels[level] = levels[level] or {}
+    levels[level][#levels[level] + 1] = i
+  end
+  for _, level in ipairs({ 1, 3, 9, 15 }) do
+    local group = levels[level]
+    if group then
+      s.level(level)
+      for _, i in ipairs(group) do
+        local h = i == d.selected and 3 or 1
+        s.rect(x0 + (i - 1) * (w + 1), TICK_Y + 3 - h, w, h)
+      end
+      s.fill()
+    end
   end
 end
 
@@ -271,7 +288,7 @@ function Screen.draw(s, view)
       s.text("new")
     end
   end
-  dots(s, view)
+  ticks(s, view)
   if view.message then
     s.level(0)
     s.rect(0, 55, 128, 9)
