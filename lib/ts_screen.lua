@@ -50,7 +50,10 @@ end
 
 -- Row boundaries; the root notes; and, when neighbours are at least 3 px apart, the scale notes (dimmer).
 local function guide_lines(s, g, span)
-  if g.rows and #g.rows > 0 then dotted(s, span, g.rows, 2) end
+  -- (rows crowded closer than 3 px would only wash the canvas, so they are dropped too)
+  if g.rows and #g.rows > 0 and (#g.rows < 2 or pitch_y(span, g.rows[1]) - pitch_y(span, g.rows[2]) >= 3) then
+    dotted(s, span, g.rows, 2)
+  end
   if g.scale and #g.scale > 1 then
     local roomy = true
     for i = 2, #g.scale do

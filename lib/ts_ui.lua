@@ -9,6 +9,7 @@
 local Ui = {}
 
 local DELETE_WINDOW = 3.0 -- seconds
+local SETTINGS_SHOW = 2.0 -- seconds the settings stay up after an E2/E3 turn, over the pen's readout
 local DELETE_TEXT = "K2 again to delete"
 local LEVEL_STEP = 0.05
 
@@ -234,8 +235,11 @@ function Ui.new(opts)
     end
   end
 
+  local turned_at -- when E2 or E3 last turned
+
   function self.enc(n, d)
     local cur = set()
+    if n == 2 or n == 3 then turned_at = now() end
     if n == 1 then
       local count = #cur.sequences
       local limit = math.max(math.min(count + 1, model.MAX_SEQUENCES), 1)
@@ -299,6 +303,7 @@ function Ui.new(opts)
       local row = clip(round(pitch), s.low, s.high)
       if s.voice == "midi kit" then return { lines = { row .. " " .. note_name(row) } } end
       local slot = row - 35
+      if slot < 1 or slot > 16 then return { lines = { "no slot" } } end -- the range was edited past the rack
       local name = drum_name(slot)
       local count = "row " .. slot .. "/16"
       if not name then return { lines = { count, "empty" } } end
@@ -349,7 +354,7 @@ function Ui.new(opts)
       stroke_space = ctx.stroke and { loop_beats = ctx.stroke.loop_beats, bottom = ctx.stroke.bottom, top = ctx.stroke.top,
         pad = ctx.stroke.pad } or nil,
       guides = guides(shown),
-      readout = (ctx.tip or ctx.hover) and readout(shown, ctx.tip or ctx.hover) or nil,
+      readout = (ctx.tip or ctx.hover) and not (turned_at and now() - turned_at < SETTINGS_SHOW) and readout(shown, ctx.tip or ctx.hover) or nil,
       lines = self.info_lines(shown),
       line = self.line(),
       dots = { selected = cur.selected or #cur.sequences + 1, states = states },
