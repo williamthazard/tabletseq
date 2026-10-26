@@ -64,35 +64,137 @@ local function guide_lines(s, g, span)
   if g.root and #g.root > 0 then dotted(s, span, g.root, 2) end
 end
 
-local function strokes(s, seq, loop_beats, span)
+-- Strokes are drawn thinned and in four brightness bands, because every call on norns is a C call
+-- into cairo on the main thread: thousands of them per frame would starve the clocks. A point is
+-- skipped when it lands less than 1 px (straight-line distance) from the last one drawn; a finished
+-- stroke always keeps its last point. A segment's level is the mean pressure of its ends, snapped to
+-- the nearest of the BANDS, so the pressure shading still reads. All the segments of a band are
+-- one path (move, line, line, ...) stroked once; the dots of a band are filled once.
+local BANDS = { 3, 7, 11, 15 }
+
+local function band_of(pressure)
+  return math.floor(3 * math.max(0, math.min(1, pressure)) + 0.5) + 1
+end
+
+-- art = { segs = {[band] = {x0, y0, x1, y1, ...}}, dots = {[band] = {x, y, ...}} }
+local function new_art()
+  local art = { segs = {}, dots = {} }
+  for b = 1, #BANDS do art.segs[b], art.dots[b] = {}, {} end
+  return art
+end
+
+local function add_dot(art, x, y, pressure)
+  local d = art.dots[band_of(pressure)]
+  local k = #d
+  d[k + 1], d[k + 2] = x, y
+end
+
+-- Adds the stroke's points (pos maps one to canvas x, y) to art; true if any segment was added.
+-- keep_last: the last point is always drawn, however close it is to the one before.
+local function add_line(art, pts, pos, keep_last)
+  local x0, y0 = pos(pts[1])
+  local p0 = pts[1][3]
+  local n, drawn = #pts, false
+  for i = 2, n do
+    local x1, y1 = pos(pts[i])
+    if (keep_last and i == n) or (x1 - x0) ^ 2 + (y1 - y0) ^ 2 >= 1 then
+      local g = art.segs[band_of((p0 + pts[i][3]) / 2)]
+      local k = #g
+      g[k + 1], g[k + 2], g[k + 3], g[k + 4] = x0, y0, x1, y1
+      x0, y0, p0 = x1, y1, pts[i][3]
+      drawn = true
+    end
+  end
+  return drawn
+end
+
+-- Draws art: per band, the segments stroked once, then the dots filled once. Segments that start
+-- where the last one ended continue the path.
+local function draw_art(s, art)
+  s.line_width(1)
+  s.line_join("round")
+  for b = 1, #BANDS do
+    local g, d = art.segs[b], art.dots[b]
+    if #g > 0 or #d > 0 then s.level(BANDS[b]) end
+    if #g > 0 then
+      local lx, ly
+      for i = 1, #g, 4 do
+        if g[i] ~= lx or g[i + 1] ~= ly then s.move(g[i], g[i + 1]) end
+        s.line(g[i + 2], g[i + 3])
+        lx, ly = g[i + 2], g[i + 3]
+      end
+      s.stroke()
+    end
+    if #d > 0 then
+      for i = 1, #d, 2 do
+        s.move(d[i] + 1.5, d[i + 1])
+        s.circle(d[i], d[i + 1], 1.5)
+      end
+      s.fill()
+    end
+  end
+end
+
+local function build_strokes(seq, loop_beats, span)
+  local art = new_art()
   local function pos(p)
     return p[1] / loop_beats * W, pitch_y(span, p[2])
   end
-  s.line_width(1)
   for _, stroke in ipairs(seq.strokes) do
     local pts = stroke.points
     if pts[1][1] < loop_beats then
       if stroke.kind == "dot" then
         local x, y = pos(pts[1])
-        s.level(3 + round(12 * pts[1][3]))
-        s.circle(x, y, 1.5)
-        s.fill()
+        add_dot(art, x, y, pts[1][3])
       else
-        for i = 2, #pts do
-          local x0, y0 = pos(pts[i - 1])
-          local x1, y1 = pos(pts[i])
-          s.level(3 + round(12 * (pts[i - 1][3] + pts[i][3]) / 2))
-          s.move(x0, y0)
-          s.line(x1, y1)
-          s.stroke()
-        end
+        add_line(art, pts, pos, true)
       end
     end
   end
+  return art
 end
 
--- The stroke being drawn, as a finished one is (unquantized: the pen's own path). Points less than a
--- pixel from the last one drawn are skipped, so a long stroke stays cheap.
+-- The finished strokes' art is kept per sequence while nothing that moves a point on the canvas has
+-- changed: the loop length, the span, the voice and range, and each stroke (the table, its points
+-- table, their count and the first and last point). The stroke in progress is never cached.
+local cache = setmetatable({}, { __mode = "k" })
+
+local function stamp(seq, loop_beats, span)
+  local st = { loop_beats = loop_beats, bottom = span.bottom, top = span.top, pad = span.pad or false,
+    voice = seq.voice, low = seq.low, high = seq.high, n = #seq.strokes, strokes = {} }
+  for i, stroke in ipairs(seq.strokes) do
+    local pts = stroke.points
+    local a, z = pts[1], pts[#pts]
+    st.strokes[i] = { stroke, pts, #pts, stroke.kind, a[1], a[2], a[3], z[1], z[2], z[3] }
+  end
+  return st
+end
+
+local function same(a, b)
+  for _, k in ipairs({ "loop_beats", "bottom", "top", "pad", "voice", "low", "high", "n" }) do
+    if a[k] ~= b[k] then return false end
+  end
+  for i = 1, a.n do
+    local x, y = a.strokes[i], b.strokes[i]
+    for j = 1, 10 do
+      if x[j] ~= y[j] then return false end
+    end
+  end
+  return true
+end
+
+local function strokes(s, seq, loop_beats, span)
+  local now = stamp(seq, loop_beats, span)
+  local hit = cache[seq]
+  if not (hit and same(hit.stamp, now)) then
+    hit = { stamp = now, art = build_strokes(seq, loop_beats, span) }
+    cache[seq] = hit
+  end
+  draw_art(s, hit.art)
+end
+
+-- The stroke being drawn, as a finished one is (unquantized: the pen's own path), but not cached and
+-- without forcing its last point (the tip is drawn on its own).
 -- space: the loop length and canvas span the points were captured in (they may differ from the
 -- sequence's now)
 local function live_stroke(s, space, pts)
@@ -100,34 +202,19 @@ local function live_stroke(s, space, pts)
   local function pos(p)
     return p[1] / loop_beats * W, pitch_y(space, p[2])
   end
-  s.line_width(1)
+  local art = new_art()
   if #pts == 1 then
     local x, y = pos(pts[1])
-    s.level(3 + round(12 * pts[1][3]))
-    s.circle(x, y, 1.5)
-    s.fill()
-    return
-  end
-  local x0, y0 = pos(pts[1])
-  local p0 = pts[1]
-  local drawn = false
-  for i = 2, #pts do
-    local x1, y1 = pos(pts[i])
-    if (x1 - x0) ^ 2 + (y1 - y0) ^ 2 >= 1 then
-      s.level(3 + round(12 * (p0[3] + pts[i][3]) / 2))
-      s.move(x0, y0)
-      s.line(x1, y1)
-      s.stroke()
-      x0, y0, p0 = x1, y1, pts[i]
-      drawn = true
+    add_dot(art, x, y, pts[1][3])
+  else
+    local drawn = add_line(art, pts, pos, false)
+    -- a jittery tap or hold never leaves its first pixel: it stays a dot
+    if not drawn then
+      local x, y = pos(pts[1])
+      add_dot(art, x, y, pts[1][3])
     end
   end
-  -- a jittery tap or hold never leaves its first pixel: it stays a dot
-  if not drawn then
-    s.level(3 + round(12 * pts[1][3]))
-    s.circle(x0, y0, 1.5)
-    s.fill()
-  end
+  draw_art(s, art)
 end
 
 local function canvas(s, view)
