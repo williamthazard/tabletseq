@@ -1,13 +1,15 @@
 // tabletseq's engine: the sine and the drum rack's one-shots, each sequence on its own group, and the
-// effects they send to (reverb, delay and Carter's delay, ported from just draw for norns).
+// effects they send to (reverb, delay and Carter's delay, ported from just draw for norns), which norns'
+// audio input can feed too.
 // The only SuperCollider class in the script; the SynthDefs live in ts_sine.scd, ts_oneshot.scd,
 // ts_fx.scd and ts_grains.scd.
-// Node order: the sequence groups, the delay, Carter's pointer and grains (when it is on), the reverb, Carter's
-// feedback patch and recorder, then the output stage (\ts_out: engine level and a -1 dBFS limiter) at the tail.
+// Node order: the input synth (\ts_input) at the head of the group the sequences are in, the sequence groups,
+// the delay, Carter's pointer and grains (when it is on), the reverb, Carter's feedback patch and recorder,
+// then the output stage (\ts_out: engine level and a -1 dBFS limiter) at the tail.
 // Every note starts in its sequence's group (1-16), so level and sends act live on the sounding notes.
 Engine_TabletSeq : CroneEngine {
 	var master, groups, levels, sends, buffers, decodeEnv;
-	var reverbBus, delayBus, grainsBus, delayGroup, reverbGroup, outGroup, delay, reverb, outStage, outLevel = 0.316;
+	var reverbBus, delayBus, grainsBus, delayGroup, reverbGroup, outGroup, input, delay, reverb, outStage, outLevel = 0.316;
 	// Carter's delay (ts_grains.scd): nothing is allocated until grains_on 1. grainSet holds every
 	// setting, so values sent while the chain is off (or still allocating) apply when it comes up.
 	var grainsOn = false, grainsLive = false, grainsGen = 0;
@@ -47,9 +49,14 @@ Engine_TabletSeq : CroneEngine {
 		sends = Array.fill(seqCount, { [0, 0, 0] });
 		buffers = Array.newClear(slotCount);
 		this.initGrains;
+		// norns' audio input into the effects: it writes the reverb, delay and Carter's buses, never the main
+		// output (LEVELS > monitor passes the dry input). It sits at the head of master, ahead of the sequence
+		// groups and so ahead of everything that reads those buses: the delay, the reverb and Carter's recorder.
+		input = Synth.new(\ts_input, [\inL, context.in_b[0], \inR, context.in_b[1],
+			\reverbOut, reverbBus, \delayOut, delayBus, \grainsOut, grainsBus], master, \addToHead);
 		// A bus written by a node that runs after its reader is lost for that cycle (In.ar hears silence), so
-		// the reverb runs after everything that writes its bus: the sequence groups (their sends), the delay and
-		// Carter's grains. The delay has a group of its own, and Carter's pointer and grains are made with
+		// the reverb runs after everything that writes its bus: the input synth and the sequence groups (their
+		// sends), the delay and Carter's grains. The delay has a group of its own, and Carter's pointer and grains are made with
 		// Group.after(delayGroup), which puts them between delayGroup and reverbGroup. Its feedback patch and
 		// recorder go the other way, after the reverb, so the feedback hears it.
 		delayGroup = Group.after(master);
@@ -107,6 +114,14 @@ Engine_TabletSeq : CroneEngine {
 			[\set_reverb_damp, { reverb }, \damp], [\set_reverb_level, { reverb }, \amp]
 		].do { |row|
 			this.addCommand(row[0], "f", { arg msg; row[1].value.set(row[2], msg[1]) });
+		};
+
+		// The sends of norns' audio input.
+		[
+			[\set_in_reverb_send, \in_reverb_send], [\set_in_delay_send, \in_delay_send],
+			[\set_in_grains_send, \in_grains_send]
+		].do { |row|
+			this.addCommand(row[0], "f", { arg msg; input.set(row[1], msg[1]) });
 		};
 
 		// The engine level, a linear amp, ahead of the limiter.
@@ -338,6 +353,7 @@ Engine_TabletSeq : CroneEngine {
 
 	free {
 		this.freeGrains;
+		input.free;
 		delay.free;
 		reverb.free;
 		outStage.free;

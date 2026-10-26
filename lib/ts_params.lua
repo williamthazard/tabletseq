@@ -1,6 +1,7 @@
 -- The settings that are not per sequence, as norns params so PSETs save and load them: beats per
 -- bar, the MIDI device, the JF and w/syn module settings, the drum folder, the tablet and flip, and the
--- effects (just draw's reverb, delay and Carter's delay; the sends are per sequence).
+-- effects (just draw's reverb, delay and Carter's delay; the sends are per sequence, except the
+-- three that send norns' audio input).
 -- `p` is the paramset (norns's `params`). init() ends with params:bang(), so the defaults reach everything.
 -- deps = {
 --   seq            ts_seq (set_bpb),
@@ -120,7 +121,7 @@ function Params.add(p, deps)
 
   -- Reverb and delay live in the engine, after the sequences' groups; each sequence's sends feed them. Each action sends its value to the
   -- engine command of the same name; params:bang() then brings the engine in line.
-  p:add_group("effects", "effects", 9)
+  p:add_group("effects", "effects", 12)
   local function fx(id, name, min, max, warp, default, units, command)
     p:add_control(id, name, controlspec.new(min, max, warp, 0, default, units))
     p:set_action(id, function(v) engine[command](v) end)
@@ -144,6 +145,11 @@ function Params.add(p, deps)
   fx("reverb_room", "reverb room", 0, 1, "lin", 0.5, "", "set_reverb_room")
   fx("reverb_damp", "reverb damp", 0, 1, "lin", 0.5, "", "set_reverb_damp")
   fx("reverb_level", "reverb level", 0, 2, "lin", 1, "", "set_reverb_level")
+  -- norns' audio input into the same effects. The dry input stays on LEVELS > monitor: these sends add
+  -- only the effected copies.
+  fx("in_reverb_send", "input to reverb", 0, 1, "lin", 0, "", "set_in_reverb_send")
+  fx("in_delay_send", "input to delay", 0, 1, "lin", 0, "", "set_in_delay_send")
+  fx("in_grains_send", "input to carter's", 0, 1, "lin", 0, "", "set_in_grains_send")
 
   -- Carter's delay: schicksalslied 2's granular chain, ported. It stays unallocated until grains_on
   -- is switched on. Each action sends its value to the engine, which stores it until the chain

@@ -110,7 +110,7 @@ them back. with no folder picked, the drum rack is silent.
 
 ## effects
 
-reverb, delay and carter's delay, on the sine and the drum rack only. every sequence on those voices
+reverb, delay and carter's delay, on the sine and the drum rack (and norns' audio input, below). every sequence on those voices
 has its own reverb, delay and carter's sends (0 to 1, 0 at first). the settings are params, off by
 default.
 
@@ -120,6 +120,17 @@ default.
 - carter's delay: a granular delay (from schicksalslied 2) that is allocated only while its switch
   is on. its granular switches, feedback patch and grain lfo rates are in params too.
   "carter's to reverb" (0 to 1, 0 at first) also sends the grains to the reverb, on top of their dry output.
+
+### audio input through the effects
+
+norns' audio input can go through the same effects, for blending an outside source (a modular, say)
+with the internal voices. three params in the effects group, each 0 to 1 and 0 at first: "input to
+reverb", "input to delay" and "input to carter's" (carter's delay must be on to be heard). they add
+only the effected copies. the dry input is not passed on by tabletseq: it stays on LEVELS > monitor
+in the norns menu, so set that level for the dry sound.
+
+if the modular also receives the norns' output, the input can feed back through the loop; keep the
+sends low, and watch the levels.
 
 ## engine level and the limiter
 
