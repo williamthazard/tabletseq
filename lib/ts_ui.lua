@@ -23,6 +23,21 @@ local SCALE_SHORT = {
 local NOTE_NAMES = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" }
 local SENDS = { { "rev", "reverb" }, { "dly", "delay" }, { "grn", "grains" } }
 local LABELS = { "voice", "bars", "low", "high", "level", "quant", "grid", "pitch", "root", "scale" }
+-- the info column fits about 9 characters, label and value together: each line gets a label of at most
+-- 3, and the full name shows in the bottom strip while E3 turns it
+local SHORT_LABEL = {
+  voice = "vox", bars = "bar", low = "lo", high = "hi", level = "lvl", quant = "qnt", grid = "grd",
+  pitch = "pq", root = "key", scale = "scl", chan = "ch", bend = "bnd",
+  rev = "rev", dly = "dly", grn = "grn",
+}
+local SCALE_FULL = {
+  harmonicMinor = "harmonic minor", majorPentatonic = "major pentatonic",
+  minorPentatonic = "minor pentatonic",
+}
+local GRID_FULL = { ["1/8T"] = "1/8 triplet", ["1/16T"] = "1/16 triplet" }
+local NOTICE_NAME = {
+  quant = "time quantize", pitch = "pitch quantize", chan = "midi channel", bend = "bend range",
+}
 
 local PITCH_LINES = { pitch = true, root = true, scale = true }
 
@@ -46,6 +61,7 @@ local function is_midi(seq) return seq.voice == "midi synth" or seq.voice == "mi
 
 function Ui.new(opts)
   local set, seq, router, model, now = opts.set, opts.seq, opts.router, opts.model, opts.now
+  local notify = opts.notify or function() end
   local line_i = 1
   local pending = nil -- { seq, at }: the first K2 of a delete
   local self = {}
@@ -78,6 +94,7 @@ function Ui.new(opts)
   local SETTINGS = {
     voice = {
       show = function(s) return VOICE_SHORT[s.voice] end,
+      full = function(s) return s.voice end,
       turn = function(s, d)
         local voices = model.VOICES
         local v = voices[clip(index_of(voices, s.voice) + d, 1, #voices)]
@@ -93,18 +110,22 @@ function Ui.new(opts)
     },
     bars = {
       show = function(s) return tostring(s.bars) end,
+      full = function(s) return tostring(s.bars) end,
       turn = function(s, d) s.bars = clip(s.bars + d, 1, 64) end,
     },
     low = {
       show = function(s) return note_name(s.low) end,
+      full = function(s) return note_name(s.low) end,
       turn = function(s, d) model.set_range(s, s.low + d, s.high) end,
     },
     high = {
       show = function(s) return note_name(s.high) end,
+      full = function(s) return note_name(s.high) end,
       turn = function(s, d) model.set_range(s, s.low, s.high + d) end,
     },
     level = {
       show = function(s) return string.format("%.2f", s.level) end,
+      full = function(s) return string.format("%.2f", s.level) end,
       turn = function(s, d)
         s.level = level_step(s.level, d)
         if listed(s) then router.set_level(s, s.level) end
@@ -112,10 +133,15 @@ function Ui.new(opts)
     },
     quant = {
       show = function(s) return on_off(s.time_quant) end,
+      full = function(s) return on_off(s.time_quant) end,
       turn = function(s, d) s.time_quant = d > 0 end,
     },
     grid = {
       show = function(s) return model.STEP_LABELS[index_of(model.STEP_CHOICES, s.steps_per_beat)] end,
+      full = function(s)
+        local l = model.STEP_LABELS[index_of(model.STEP_CHOICES, s.steps_per_beat)]
+        return GRID_FULL[l] or l
+      end,
       turn = function(s, d)
         local choices = model.STEP_CHOICES
         s.steps_per_beat = choices[clip(index_of(choices, s.steps_per_beat) + d, 1, #choices)]
@@ -123,24 +149,29 @@ function Ui.new(opts)
     },
     pitch = {
       show = function(s) return on_off(s.pitch_quant) end,
+      full = function(s) return on_off(s.pitch_quant) end,
       turn = function(s, d) s.pitch_quant = d > 0 end,
     },
     root = {
       show = function(s) return NOTE_NAMES[s.root + 1] end,
+      full = function(s) return NOTE_NAMES[s.root + 1] end,
       turn = function(s, d) s.root = clip(s.root + d, 0, 11) end,
     },
     scale = {
       show = function(s) return SCALE_SHORT[s.scale] end,
+      full = function(s) return SCALE_FULL[s.scale] or s.scale end,
       turn = function(s, d)
         s.scale = model.SCALES[clip(index_of(model.SCALES, s.scale, "name") + d, 1, #model.SCALES)].name
       end,
     },
     chan = {
       show = function(s) return tostring(s.midi_channel) end,
+      full = function(s) return tostring(s.midi_channel) end,
       turn = function(s, d) s.midi_channel = clip(s.midi_channel + d, 1, 16) end,
     },
     bend = {
       show = function(s) return tostring(s.bend_range) end,
+      full = function(s) return tostring(s.bend_range) end,
       turn = function(s, d) s.bend_range = clip(s.bend_range + d, 1, 48) end,
     },
   }
@@ -148,6 +179,7 @@ function Ui.new(opts)
     local field = send[2] .. "_send"
     SETTINGS[send[1]] = {
       show = function(s) return string.format("%.2f", s[field]) end,
+      full = function(s) return string.format("%.2f", s[field]) end,
       turn = function(s, d)
         s[field] = level_step(s[field], d)
         if listed(s) then router.set_send(s, send[2], s[field]) end
@@ -155,7 +187,7 @@ function Ui.new(opts)
     }
   end
 
-  -- {{label, value}, ...} for the sequence's voice: no pitch lines for the kit and drum rack, the MIDI
+  -- {{label, value, id}, ...} for the sequence's voice: no pitch lines for the kit and drum rack, the MIDI
   -- lines for MIDI voices, the sends for the sine and drum rack
   function self.info_lines(s)
     local ids = {}
@@ -168,8 +200,19 @@ function Ui.new(opts)
       for _, send in ipairs(SENDS) do ids[#ids + 1] = send[1] end
     end
     local out = {}
-    for i, id in ipairs(ids) do out[i] = { id, SETTINGS[id].show(s) } end
+    for i, id in ipairs(ids) do out[i] = { SHORT_LABEL[id], SETTINGS[id].show(s), id } end
     return out
+  end
+
+  -- "scale: harmonic minor": a line's full name and value, for the bottom strip
+  function self.full_text(s, id)
+    local name = NOTICE_NAME[id]
+    if not name then
+      for _, send in ipairs(SENDS) do
+        if send[1] == id then name = send[2] .. " send" end
+      end
+    end
+    return (name or id) .. ": " .. SETTINGS[id].full(s)
   end
 
   -- the selected line, kept within the edited sequence's lines
@@ -198,8 +241,11 @@ function Ui.new(opts)
       line_i = clip(self.line() + d, 1, #self.info_lines(s))
     elseif n == 3 then
       local s = editable()
-      local id = self.info_lines(s)[self.line()][1]
-      if SETTINGS[id].turn(s, d) ~= false and listed(s) then seq.changed(s) end
+      local id = self.info_lines(s)[self.line()][3]
+      if SETTINGS[id].turn(s, d) ~= false then
+        if listed(s) then seq.changed(s) end
+        notify(self.full_text(s, id)) -- a refused turn (false) says nothing, so no notice is overwritten
+      end
     end
   end
 
