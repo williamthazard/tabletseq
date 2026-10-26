@@ -60,10 +60,11 @@ stepped notes; with it off, one gliding note.
 default pitch ranges: sine, crow, jf and w/syn 55 to 84; midi synth 48 to 84; midi kit and drum rack
 36 to 51. midi channels start at the lowest free one.
 
-jf and w/syn module settings (jf mode; w/syn voices, lpg time, lpg symmetry, hold or pluck) are
-params. they are sent when they change and when the first sequence using that voice starts, never at
-stop. the first time jf plays in a session it also gets run mode 1 and run volts 0.7, and w/syn gets
-a neutral fm ratio, curve, ramp and fm index. they are never changed at stop or cleanup.
+jf and w/syn module settings (jf mode; w/syn voices, lpg time, lpg symmetry, fm envelope, hold or
+pluck) are params. they are sent when they change and when the first sequence using that voice
+starts, never at stop. the w/syn fm envelope starts at 0 (off): the vactrol envelope does not sweep
+the fm index. the first time jf plays in a session it also gets run mode 1 and run volts 0.7, and
+w/syn gets a neutral fm ratio, curve, ramp and fm index. they are never changed at stop or cleanup.
 
 the hardware targets (the midi device, each crow pair, jf and w/syn) are shared by every sequence.
 stopping a sequence ends only the notes it started.

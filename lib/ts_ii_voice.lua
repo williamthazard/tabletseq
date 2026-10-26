@@ -2,7 +2,7 @@
 -- `ii` is a function returning crow.ii.jf / crow.ii.wsyn; it is called on every send, never cached
 -- (a cached crowSub breaks). `connected` says whether a crow is plugged in; `clock` is norns's clock
 -- (run, sleep, cancel, get_beats, get_beat_sec); `settings` is the live settings table the params edit
--- (JF: mode; w/syn: voices, lpg_time, lpg_symmetry, hold). All are passed in.
+-- (JF: mode; w/syn: voices, lpg_time, lpg_symmetry, fm_env, hold). All are passed in.
 -- One voice per module, shared by every sequence: JF's six channels and w/syn's voices rotate globally,
 -- and a stolen one is released first. Module settings are sent by apply_settings only; first_use also
 -- sends the neutral timbre, before a session's first note and after crow reconnects. A release that
@@ -169,6 +169,7 @@ function IiVoice.Wsyn(opts)
     ii().voices(settings.voices)
     ii().lpg_time(settings.lpg_time)
     ii().lpg_symmetry(settings.lpg_symmetry)
+    ii().fm_env(settings.fm_env)
     ii().ar_mode(settings.hold and 0 or 1)
   end
 

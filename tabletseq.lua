@@ -138,7 +138,7 @@ function init()
   local engine_voice = EngineVoice.new(engine, clock)
   drums = Drums.new{ engine_voice = engine_voice, scandir = util.scandir, file_info = util.file_exists }
   local jf_settings = {} -- filled by params:bang()
-  local wsyn_settings = { voices = 4, lpg_time = 0, lpg_symmetry = 0, hold = true }
+  local wsyn_settings = { voices = 4, lpg_time = 0, lpg_symmetry = 0, fm_env = 0, hold = true }
   jf_voice = Ii.Jf.new{ ii = function() return crow.ii.jf end, connected = crow_here, clock = clock,
     settings = jf_settings }
   wsyn_voice = Ii.Wsyn.new{ ii = function() return crow.ii.wsyn end, connected = crow_here, clock = clock,
