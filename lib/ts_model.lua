@@ -17,6 +17,17 @@ M.RANGES = {
 
 M.STEP_CHOICES = { 1, 2, 3, 4, 6, 8 }
 M.STEP_LABELS = { "1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32" }
+-- Roll rates for lines on the row voices: the grid's choices plus 1/64. A sequence's roll_steps is
+-- steps per beat, or 0 for "grid" (follow steps_per_beat).
+M.ROLL_CHOICES = { 1, 2, 3, 4, 6, 8, 16 }
+M.ROLL_LABELS = { "1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/64" }
+
+-- steps per beat for the rolls of a sequence: its roll rate, or the grid's when unset
+function M.roll_rate(seq)
+  local r = seq.roll_steps
+  if r and r > 0 then return r end
+  return seq.steps_per_beat
+end
 
 -- the Mac's ten, in its order; degrees are semitones above the root
 M.SCALES = {
@@ -76,6 +87,7 @@ function M.new_sequence(seqs)
     high = r[2],
     time_quant = true,
     steps_per_beat = 4,
+    roll_steps = 0,
     pitch_quant = true,
     root = 0,
     scale = "minorPentatonic",
@@ -192,6 +204,10 @@ function M.sanitize_sequence(raw)
   seq.steps_per_beat = 4
   if valid_num(raw.steps_per_beat) and contains(M.STEP_CHOICES, raw.steps_per_beat) then
     seq.steps_per_beat = math.tointeger(raw.steps_per_beat)
+  end
+  seq.roll_steps = 0
+  if valid_num(raw.roll_steps) and contains(M.ROLL_CHOICES, raw.roll_steps) then
+    seq.roll_steps = math.tointeger(raw.roll_steps)
   end
   seq.pitch_quant = bool_or(raw.pitch_quant, true)
   seq.root = int_in(raw.root, 0, 0, 11)
@@ -568,10 +584,14 @@ function M.peak_pressure(points, lo, hi)
 end
 
 -- Hits (spec 6.3 step 4): the kit and drum rack path; the note is an integer row. points: the stroke
--- after quantizing, cutting and resampling. Returns {{kind = "hit", start, note, amp, pressure}, ...}.
+-- after quantizing, cutting and resampling. Returns {{kind = "hit", start, note, amp, pressure}, ...}
+-- and whether they are a roll (a line; a dot is one hit). A roll's hits are 1/r beat apart, r being
+-- the sequence's roll rate; whether a stroke is a dot or a line still goes by the time grid.
 function M.drum_notes(stroke, points, seq, bpb)
   local sp = seq.steps_per_beat
   local grid = 1 / sp
+  local rate = M.roll_rate(seq)
+  local step = 1 / rate
   local loop_beats = M.loop_beats(seq, bpb)
   local first, last = points[1][1], points[#points][1]
   local stored = stroke.points
@@ -582,9 +602,9 @@ function M.drum_notes(stroke, points, seq, bpb)
   local function row(note)
     return clip(round_int(note), seq.low, seq.high)
   end
-  -- the highest pressure within half a grid step of the hit, clipped to the stroke
+  -- the highest pressure within half a roll step of the hit, clipped to the stroke
   local function accent(beat)
-    return M.peak_pressure(points, math.max(beat - grid / 2, first), math.min(beat + grid / 2, last))
+    return M.peak_pressure(points, math.max(beat - step / 2, first), math.min(beat + step / 2, last))
   end
   local short = #points == 1
   if not short then
@@ -594,17 +614,15 @@ function M.drum_notes(stroke, points, seq, bpb)
     end
   end
   if short then
-    return { { kind = "hit", start = first, note = row(points[1][2]), amp = M.pressure_to_amp(top), pressure = top } }
+    return { { kind = "hit", start = first, note = row(points[1][2]), amp = M.pressure_to_amp(top), pressure = top } }, false
   end
   local beats = {}
+  local from, to = first, last
   if seq.time_quant then
-    local first_step = round_int(first * sp)
-    local steps = round_int(last * sp) - first_step + 1
-    for i = 0, steps - 1 do beats[#beats + 1] = (first_step + i) / sp end
-  else
-    local steps = math.floor((last - first) * sp + 1e-9) + 1
-    for i = 0, steps - 1 do beats[#beats + 1] = first + i * grid end
+    from, to = round_int(first * sp) / sp, round_int(last * sp) / sp
   end
+  local steps = math.floor((to - from) * rate + 1e-9) + 1
+  for i = 0, steps - 1 do beats[#beats + 1] = from + i * step end
   local out = {}
   for _, b in ipairs(beats) do
     if b < loop_beats - 1e-9 then
@@ -615,7 +633,7 @@ function M.drum_notes(stroke, points, seq, bpb)
       }
     end
   end
-  return out
+  return out, true
 end
 
 -- What the voice plays through (spec 12.4, R13): "engine" (the sine), "hits" (the drum rack only)
@@ -696,9 +714,12 @@ function M.midi_notes_for(seq, bpb)
     if points then
       if seq.voice == "midi kit" then
         -- every integer note is a pad, so the scale never applies (drum_notes ignores it)
-        for _, hit in ipairs(M.drum_notes(stroke, points, seq, bpb)) do
+        local hits, rolled = M.drum_notes(stroke, points, seq, bpb)
+        -- a roll's hits are no longer than their spacing, so fast rolls do not overlap
+        local dur = rolled and math.min(grid, 1 / M.roll_rate(seq)) or grid
+        for _, hit in ipairs(hits) do
           notes[#notes + 1] = {
-            kind = "midi", start = hit.start, dur = grid, note = hit.note,
+            kind = "midi", start = hit.start, dur = dur, note = hit.note,
             vel = M.midi_velocity(hit.pressure, level), bends = {}, pressures = {},
           }
         end

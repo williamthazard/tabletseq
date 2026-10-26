@@ -18,7 +18,9 @@ the first install needs a norns restart, so the new engine (`Engine_TabletSeq`) 
 - a quick touch is a dot: one note. drawn on a drum voice, a dot is a hit.
 - a line is a held note. its pitch glides with the pen, and its pressure shapes its loudness.
 - several strokes at the same time make a chord.
-- on a drum voice, a line is a roll.
+- on a drum voice, a line is a roll. it repeats at the time grid unless the "rat" line sets a roll
+  rate (grid, 1/4, 1/8, 1/8 triplet, 1/16, 1/16 triplet, 1/32 or 1/64). the midi kit's roll hits are as
+  short as the roll's spacing when that is shorter than the grid.
 - time quantize snaps notes to the grid (1/4, 1/8, 1/8 triplets, 1/16, 1/16 triplets or 1/32).
   pitch quantize snaps pitch to a root and scale (the mac's ten scales, minor pentatonic at first);
   it does not apply to the midi kit or the drum rack, whose notes are rows, so they have no pitch lines.

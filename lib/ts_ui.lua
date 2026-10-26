@@ -24,11 +24,11 @@ local SCALE_SHORT = {
 }
 local NOTE_NAMES = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" }
 local SENDS = { { "rev", "reverb" }, { "dly", "delay" }, { "grn", "grains" } }
-local LABELS = { "voice", "bars", "low", "high", "level", "quant", "grid", "pitch", "root", "scale" }
+local LABELS = { "voice", "bars", "low", "high", "level", "quant", "grid", "rat", "pitch", "root", "scale" }
 -- the info column fits about 9 characters, label and value together: each line gets a label of at most
 -- 3, and the full name shows in the bottom strip while E3 turns it
 local SHORT_LABEL = {
-  voice = "vox", bars = "bar", low = "lo", high = "hi", level = "lvl", quant = "qnt", grid = "grd",
+  voice = "vox", bars = "bar", low = "lo", high = "hi", level = "lvl", quant = "qnt", grid = "grd", rat = "rat",
   pitch = "pq", root = "key", scale = "scl", chan = "ch", bend = "bnd",
   rev = "rev", dly = "dly", grn = "grn",
 }
@@ -38,10 +38,11 @@ local SCALE_FULL = {
 }
 local GRID_FULL = { ["1/8T"] = "1/8 triplet", ["1/16T"] = "1/16 triplet" }
 local NOTICE_NAME = {
-  quant = "time quantize", pitch = "pitch quantize", chan = "midi channel", bend = "bend range",
+  quant = "time quantize", rat = "roll rate", pitch = "pitch quantize", chan = "midi channel", bend = "bend range",
 }
 
 local PITCH_LINES = { pitch = true, root = true, scale = true }
+local ROLL_LINES = { rat = true } -- the row voices only
 
 local function clip(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 
@@ -152,6 +153,16 @@ function Ui.new(opts)
         s.steps_per_beat = choices[clip(index_of(choices, s.steps_per_beat) + d, 1, #choices)]
       end,
     },
+    rat = {
+      show = function(s) return s.roll_steps and s.roll_steps > 0 and model.ROLL_LABELS[index_of(model.ROLL_CHOICES, s.roll_steps)] or "grid" end,
+      full = function(s) return s.roll_steps and s.roll_steps > 0 and model.ROLL_LABELS[index_of(model.ROLL_CHOICES, s.roll_steps)] or "grid" end,
+      turn = function(s, d)
+        -- grid is the slot before 1/4
+        local i = (s.roll_steps and s.roll_steps > 0) and index_of(model.ROLL_CHOICES, s.roll_steps) or 0
+        i = clip(i + d, 0, #model.ROLL_CHOICES)
+        s.roll_steps = i == 0 and 0 or model.ROLL_CHOICES[i]
+      end,
+    },
     pitch = {
       show = function(s) return on_off(s.pitch_quant) end,
       full = function(s) return on_off(s.pitch_quant) end,
@@ -198,7 +209,8 @@ function Ui.new(opts)
     local ids = {}
     for _, id in ipairs(LABELS) do
       -- hits are rows, not pitches: pitch quantize, root and scale do not apply (spec 5.3)
-      if not (PITCH_LINES[id] and model.plays_hits(s.voice)) then ids[#ids + 1] = id end
+      local hits = model.plays_hits(s.voice)
+      if not (PITCH_LINES[id] and hits) and not (ROLL_LINES[id] and not hits) then ids[#ids + 1] = id end
     end
     if is_midi(s) then ids[#ids + 1] = "chan"; ids[#ids + 1] = "bend" end
     if model.uses_engine(s.voice) then
