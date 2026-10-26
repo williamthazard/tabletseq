@@ -5,6 +5,8 @@
 -- whole. A change to a playing sequence is planned from its next pass. The clock's beat is re-read at
 -- every wake, so a beat counter that restarts or jumps starts the pass afresh on the next bar line;
 -- the voices wait for each note's beat in short sleeps, so a tempo change moves nothing off its beat.
+-- A wake that is merely late (the main thread was busy) is no jump: the beats it advanced match the
+-- wall time that passed. Notes that fell due during the stall and are over a STALE are skipped.
 local Seq = {}
 
 local EPS = 1e-9
@@ -15,13 +17,23 @@ local LOOKAHEAD = 0.25
 local STEP = 0.125
 -- a wake further than this many beats from the last one, or before it, is a jump of the beat counter
 local JUMP = 1
+-- with the wall clock: a wake is a jump when the beats went back by more than BACK, or ran ahead of
+-- the elapsed time by more than JUMP
+local BACK = 0.01
+-- a note this far past its start when a late wake finds it is skipped
+local STALE = 0.25
 
 -- clock: run(fn), sync(beats), cancel(id), get_beats(); model: ts_model; router: play(seq, note, at),
--- release_seq(seq); bpb: fn() -> beats per bar; now_beats: fn() -> the clock's beat (default clock.get_beats)
+-- release_seq(seq); bpb: fn() -> beats per bar; now_beats: fn() -> the clock's beat (default clock.get_beats);
+-- now_secs: fn() -> wall-clock seconds, optional (without it a wake more than JUMP beats on is a jump);
+-- beat_sec: fn() -> seconds per beat (default clock.get_beat_sec)
 function Seq.new(opts)
   local clock, model, router = opts.clock, opts.model, opts.router
   local bpb = opts.bpb
   local now_beats = opts.now_beats or clock.get_beats
+  local now_secs = opts.now_secs
+  local beat_sec = opts.beat_sec or clock.get_beat_sec
+  local skipped = 0
   local entries = {} -- seq -> { state, id, pass_start, pass_beats, plan }
   local self = {}
 
@@ -36,6 +48,13 @@ function Seq.new(opts)
   local function bar_now()
     local n = bpb()
     return math.floor(now_beats() / n + 0.5) * n
+  end
+
+  -- did the beat counter jump between two wakes? `at` and `secs` are now, `prev` and `prev_secs` the last wake
+  local function jumped(at, secs, prev, prev_secs)
+    if not now_secs then return at < prev - EPS or at - prev > JUMP end
+    local explained = math.max(secs - prev_secs, 0) / beat_sec()
+    return at < prev - BACK or at - prev - explained > JUMP
   end
 
   local function finish(seq)
@@ -54,6 +73,7 @@ function Seq.new(opts)
         e.state = "playing"
         local line = bar      -- the last bar line reached
         local prev = bar      -- the beat of the last wake
+        local prev_secs = now_secs and now_secs()
         local plan, i
         local function new_pass()
           e.pass_start = bar
@@ -61,15 +81,22 @@ function Seq.new(opts)
           plan, i = pass_notes(seq, e), 1
         end
         new_pass()
-        while true do
-          -- hand out what starts within LOOKAHEAD of this wake
-          while plan[i] and bar + plan[i].start <= prev + LOOKAHEAD + EPS do
-            router.play(seq, plan[i], bar + plan[i].start)
+        -- hand out what starts by `limit`; a note already STALE past its start (a late wake) is skipped
+        local function hand_out(limit)
+          while plan[i] and bar + plan[i].start <= limit + EPS do
+            if now_secs and bar + plan[i].start < prev - STALE then
+              skipped = skipped + 1
+            else
+              router.play(seq, plan[i], bar + plan[i].start)
+            end
             i = i + 1
           end
+        end
+        while true do
+          hand_out(prev + LOOKAHEAD) -- what starts within LOOKAHEAD of this wake
           clock.sync(STEP)
-          local at = now_beats()
-          if at < prev - EPS or at - prev > JUMP then
+          local at, secs = now_beats(), now_secs and now_secs()
+          if jumped(at, secs, prev, prev_secs) then
             -- the beat counter jumped: what is still waiting is on the old timeline, so it goes
             -- and the pass is handed out again from the next bar line (a wake on a bar line is it:
             -- sync would wait for the one after)
@@ -78,11 +105,13 @@ function Seq.new(opts)
             on_bar = math.abs(at / n - math.floor(at / n + 0.5)) * n < EPS
             break
           end
-          prev = at
-          if at >= line + bpb() - EPS then
+          prev, prev_secs = at, secs
+          -- a late wake can pass several bar lines
+          while at >= line + bpb() - EPS do
             if e.state == "stopping" then finish(seq); return end
             line = line + bpb()
             if line - bar >= e.pass_beats - EPS then
+              if now_secs then hand_out(prev + LOOKAHEAD) end -- the rest of the pass that ends
               bar = line
               new_pass()
             end
@@ -141,6 +170,9 @@ function Seq.new(opts)
     if next(entries) ~= nil then return false end
     return math.type(n) == "integer" and n >= 1 and n <= 16
   end
+
+  -- how many notes have been skipped as stale after a late wake
+  function self.skipped() return skipped end
 
   function self.changed(seq)
     local e = entries[seq]
