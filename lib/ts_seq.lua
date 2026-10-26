@@ -45,8 +45,10 @@ function Seq.new(opts)
 
   local function play_routine(seq, e)
     return function()
+      local on_bar = false -- a jump landed on a bar line: it is the start of the pass already
       while true do
-        clock.sync(bpb())
+        if not on_bar then clock.sync(bpb()) end
+        on_bar = false
         if e.state == "stopping" then finish(seq); return end
         local bar = bar_now() -- the start of the pass
         e.state = "playing"
@@ -69,8 +71,11 @@ function Seq.new(opts)
           local at = now_beats()
           if at < prev - EPS or at - prev > JUMP then
             -- the beat counter jumped: what is still waiting is on the old timeline, so it goes
-            -- and the pass is handed out again from the next bar line
+            -- and the pass is handed out again from the next bar line (a wake on a bar line is it:
+            -- sync would wait for the one after)
             router.release_seq(seq)
+            local n = bpb()
+            on_bar = math.abs(at / n - math.floor(at / n + 0.5)) * n < EPS
             break
           end
           prev = at
