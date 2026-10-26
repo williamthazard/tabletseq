@@ -1,8 +1,9 @@
 // tabletseq's effects, ported from just draw for norns (itself from schicksalslied 2's \liedDelay and
 // \liedReverb). Evaluates to an Array of unadded SynthDefs: \ts_delay, \ts_reverb and \ts_out.
 // There is no sends synth: \ts_sine and \ts_oneshot write the reverb, delay and Carter's buses
-// themselves, scaled by their sequence's sends. Node order is the sequence groups, \ts_delay, \ts_reverb:
-// the delay feeds `out` and the reverb bus, and the reverb feeds `out`.
+// themselves, scaled by their sequence's sends. Node order is the sequence groups, \ts_delay, Carter's
+// delay (when it is on), \ts_reverb: the delay and the grains feed `out` and the reverb bus, and the
+// reverb, which reads its bus last, feeds `out`.
 [
 	SynthDef(\ts_delay, { |in = 0, out = 0, reverbOut = 0, delayTime = 0.3, decayTime = 15,
 		amp = 1, amp_slew = 0.1, to_reverb = 1, to_dry = 0|

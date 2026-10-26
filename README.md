@@ -118,6 +118,7 @@ default.
   however that is set. pick a division from 1/16 to 8 beats, or "free" for seconds.
 - carter's delay: a granular delay (from schicksalslied 2) that is allocated only while its switch
   is on. its granular switches, feedback patch and grain lfo rates are in params too.
+  "carter's to reverb" (0 to 1, 0 at first) also sends the grains to the reverb, on top of their dry output.
 
 ## engine level and the limiter
 

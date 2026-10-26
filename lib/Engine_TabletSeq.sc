@@ -2,11 +2,12 @@
 // effects they send to (reverb, delay and Carter's delay, ported from just draw for norns).
 // The only SuperCollider class in the script; the SynthDefs live in ts_sine.scd, ts_oneshot.scd,
 // ts_fx.scd and ts_grains.scd.
-// The tail of the node order is the output stage (\ts_out: engine level and a -1 dBFS limiter).
+// Node order: the sequence groups, the delay, Carter's delay (when it is on), the reverb, then the output
+// stage (\ts_out: engine level and a -1 dBFS limiter) at the tail.
 // Every note starts in its sequence's group (1-16), so level and sends act live on the sounding notes.
 Engine_TabletSeq : CroneEngine {
 	var master, groups, levels, sends, buffers, decodeEnv;
-	var reverbBus, delayBus, grainsBus, fxGroup, outGroup, delay, reverb, outStage, outLevel = 0.316;
+	var reverbBus, delayBus, grainsBus, delayGroup, reverbGroup, outGroup, delay, reverb, outStage, outLevel = 0.316;
 	// Carter's delay (ts_grains.scd): nothing is allocated until grains_on 1. grainSet holds every
 	// setting, so values sent while the chain is off (or still allocating) apply when it comes up.
 	var grainsOn = false, grainsLive = false, grainsGen = 0;
@@ -46,14 +47,16 @@ Engine_TabletSeq : CroneEngine {
 		sends = Array.fill(seqCount, { [0, 0, 0] });
 		buffers = Array.newClear(slotCount);
 		this.initGrains;
-		// The effects run after the sequence groups. Each new synth goes to the head of fxGroup, so adding
-		// reverb, then delay, runs them delay, reverb: the delay's writes reach the reverb bus before it is read.
-		fxGroup = Group.after(master);
-		reverb = Synth.new(\ts_reverb, [\in, reverbBus, \out, context.out_b], fxGroup);
-		delay = Synth.new(\ts_delay, [\in, delayBus, \out, context.out_b, \reverbOut, reverbBus], fxGroup);
-		// The output stage runs last of all. Carter's delay groups are made with Group.after(fxGroup),
-		// which puts them between fxGroup and outGroup, so they still run before it.
-		outGroup = Group.after(fxGroup);
+		// A bus written by a node that runs after its reader is lost for that cycle (In.ar hears silence), so
+		// the reverb runs after everything that writes its bus: the sequence groups (their sends), the delay and
+		// Carter's grains. The delay has a group of its own, and Carter's groups are made with
+		// Group.after(delayGroup), which puts them between delayGroup and reverbGroup.
+		delayGroup = Group.after(master);
+		delay = Synth.new(\ts_delay, [\in, delayBus, \out, context.out_b, \reverbOut, reverbBus], delayGroup);
+		reverbGroup = Group.after(delayGroup);
+		reverb = Synth.new(\ts_reverb, [\in, reverbBus, \out, context.out_b], reverbGroup);
+		// The output stage runs last of all.
+		outGroup = Group.after(reverbGroup);
 		outStage = Synth.new(\ts_out, [\out, context.out_b, \level, outLevel], outGroup);
 
 		this.addCommand(\sine_note, "iffs", { arg msg;
@@ -116,7 +119,7 @@ Engine_TabletSeq : CroneEngine {
 			if(msg[1] > 0) { this.allocGrains } { this.freeGrains };
 		});
 		[
-			[\set_grains_level, \level], [\set_grains_freeze, \freeze], [\set_grains_rec_pre, \recPre],
+			[\set_grains_level, \level], [\set_grains_to_reverb, \toReverb], [\set_grains_freeze, \freeze], [\set_grains_rec_pre, \recPre],
 			[\set_grains_window, \window], [\set_grains_sync, \sync],
 			[\set_grains_cutoff_ceiling, \ceiling], [\set_grains_rate_mult, \rateMult],
 			[\set_grains_octaves, \octaves], [\set_grains_fifths, \fifths],
@@ -138,7 +141,7 @@ Engine_TabletSeq : CroneEngine {
 
 	initGrains {
 		grainSet = Dictionary.newFrom([
-			\level, 0.3, \freeze, 0, \recPre, 0, \window, 0, \sync, 1, \ceiling, 16000, \rateMult, 1,
+			\level, 0.3, \toReverb, 0, \freeze, 0, \recPre, 0, \window, 0, \sync, 1, \ceiling, 16000, \rateMult, 1,
 			\octaves, 0, \fifths, 0, \suboctaves, 0, \reverse, 0, \delayScale, 1,
 			\fbAmp, 0, \fbBalance, 0, \fbHpf, 12, \fbNoise, 0, \fbSineLevel, 0, \fbSineHz, 55
 		]);
@@ -173,6 +176,7 @@ Engine_TabletSeq : CroneEngine {
 		var value = grainSet[key];
 		case
 			{ key == \level } { grainSynths.do { |g| g.set(\amp, value) } }
+			{ key == \toReverb } { grainSynths.do { |g| g.set(\toReverb, value) } }
 			{ key == \sync } { grainSynths.do { |g| g.set(\sync, value) } }
 			{ key == \ceiling } { grainSynths.do { |g| g.set(\cutoffMax, value) } }
 			{ key == \window } { grainSynths.do { |g| g.set(\grainEnv, this.grainEnvNum) } }
@@ -228,9 +232,10 @@ Engine_TabletSeq : CroneEngine {
 			if(gen != grainsGen) {
 				grainBuf.free; grainEnvBufs.do(_.free); grainPtrBus.free;
 			} {
-				// ptr, rec and grains run after fxGroup, after every note has written grainsBus.
+				// ptr and the feedback patch, rec, then the grains run after delayGroup, after every note has
+				// written grainsBus and before the reverb reads what the grains send it.
 				grainGroups = Array.newClear(3);
-				grainGroups[0] = Group.after(fxGroup);
+				grainGroups[0] = Group.after(delayGroup);
 				grainGroups[1] = Group.after(grainGroups[0]);
 				grainGroups[2] = Group.after(grainGroups[1]);
 				grainPtr = Synth(\ts_ptr, [\buf, grainBuf, \out, grainPtrBus,
@@ -248,7 +253,8 @@ Engine_TabletSeq : CroneEngine {
 				}).scramble;
 				grainSynths = grainCount.collect { |n|
 					Synth(\ts_gran, [
-						\amp, grainSet[\level], \buf, grainBuf, \out, context.out_b, \atk, 1, \rel, 1, \gate, 1,
+						\amp, grainSet[\level], \buf, grainBuf, \out, context.out_b,
+						\reverbOut, reverbBus, \toReverb, grainSet[\toReverb], \atk, 1, \rel, 1, \gate, 1,
 						\sync, grainSet[\sync], \dens, 1 / (grainDurs[n] * rates[n].abs),
 						\baseDur, grainDurs[n], \durRand, 1, \rate, rates[n], \rateRand, 1,
 						\grainEnv, this.grainEnvNum, \ptrBus, grainPtrBus, \ptrSampleDelay, grainDelays[n],
@@ -331,7 +337,8 @@ Engine_TabletSeq : CroneEngine {
 		reverb.free;
 		outStage.free;
 		outGroup.free;
-		fxGroup.free;
+		reverbGroup.free;
+		delayGroup.free;
 		master.free;
 		buffers.do { |buf| if(buf.notNil) { buf.free } };
 		reverbBus.free;
